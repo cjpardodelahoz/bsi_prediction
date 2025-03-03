@@ -1,0 +1,152 @@
+---
+title: "Exploring clinical and microbiome data from allo-HCT patients (Liao et al 2021)"
+format: html
+---
+
+This is my initial exploration of the data from Liao et al 2021.
+
+```{r}
+# Load libraries
+library(tidyverse, quietly = TRUE)
+```
+
+## Clinical data
+
+### Transplant metadata
+
+We first explored the transplant metadata:
+
+```{r}
+tblhctmeta <- read_csv("data/tblhctmeta.csv")
+head(tblhctmeta)
+```
+
+```{r, echo = FALSE}
+# EXPLORING TRANSPLANT METADATA
+
+# Total number of patients
+n_patients <- tblhctmeta$PatientID %>% unique() %>% length()
+
+# Patients with 1 HCTS
+n_patients_1hct <- tblhctmeta %>% 
+    group_by(PatientID) %>% 
+    filter(n() == 1) %>% 
+    pull(PatientID) %>% 
+    unique() %>%
+    length()
+
+# Patients with 2 HCTs
+n_patients_2hct <- tblhctmeta %>% 
+    group_by(PatientID) %>% 
+    filter(n() == 2) %>% 
+    pull(PatientID) %>% 
+    unique() %>%
+    length()
+
+# Patients with 3 HCTs
+n_patients_3hct <- tblhctmeta %>% 
+    group_by(PatientID) %>% 
+    filter(n() == 3) %>% 
+    pull(PatientID) %>% 
+    unique() %>%
+    length()
+
+# Calculate the time differences for patients with more than 1 HCT
+time_diffs <- tblhctmeta %>%
+    group_by(PatientID) %>%
+    filter(n() > 1) %>%
+    arrange(PatientID, TimepointOfTransplant) %>%
+    mutate(time_diff = TimepointOfTransplant - lag(TimepointOfTransplant)) %>%
+    filter(!is.na(time_diff)) %>%
+    pull(time_diff)
+
+# Minimum, median, and maximum time differences
+min_time_diff <- min(time_diffs)
+median_time_diff <- median(time_diffs)
+max_time_diff <- max(time_diffs)
+
+# EXPLORING DISEASE DATA
+
+# Filter the dataset to only consider one record for each patient
+unique_patients <- tblhctmeta %>%
+    group_by(PatientID) %>%
+    slice(1) %>%
+    ungroup()
+
+# Define a custom theme for plots
+custom_theme <- theme(
+    panel.grid = element_blank(),
+    panel.background = element_blank(),
+    panel.border = element_rect(color = "black", fill = NA, linewidth = 0.75), 
+    axis.text = element_text(color = "black", size = 10)
+)
+
+# Create a bar plot showing the frequency of each disease
+disease_plot <- unique_patients %>%
+    filter(!is.na(Disease)) %>%
+    count(Disease) %>%
+    ggplot(aes(x = reorder(Disease, -n), y = n)) +
+    geom_bar(stat = "identity") +
+    geom_text(aes(label = n), vjust = -0.5) +
+    ylim(0, 700) +
+    labs(x = "Disease",
+         y = "Frequency") +
+    custom_theme +
+    theme(axis.text.x = element_text(angle = 90, hjust = 1))
+
+# EXPLORING TRANSPLANT SOURCE
+
+# Create a bar plot showing the frequency of each HCT source
+hct_source_plot <- unique_patients %>%
+    filter(!is.na(HCTSource)) %>%
+    count(HCTSource) %>%
+    ggplot(aes(x = reorder(HCTSource, -n), y = n)) +
+    geom_bar(stat = "identity") +
+    geom_text(aes(label = n), vjust = -0.5) +
+    ylim(0, 550) +
+    labs(x = "HCT Source",
+         y = "Frequency") +
+    scale_x_discrete(labels = c("TCD" = "T-Cell depleted", 
+                                "PBSC_unmodified" = "Peripheral blood stem cells", 
+                                "cord" = "Cord blood", 
+                                "BM_unmodified" = "Bone marrow")) +
+    custom_theme +
+    theme(axis.text.x = element_text(angle = 90, hjust = 1))
+
+# EXPLORING CROSS-STUDY LINKS
+
+# How many patients of these patients were included in previous studies?
+n_patients_na_wbc <- tblhctmeta %>%
+    filter(!is.na(wbcPatientId)) %>%
+    pull(PatientID) %>%
+    unique() %>%
+    length()
+n_patients_na_fmt <- tblhctmeta %>%
+    filter(is.na(autoFmtPatientId)) %>%
+    pull(PatientID) %>%
+    unique() %>%
+    length()
+n_patients_na_nejm <- tblhctmeta$nejmPatientId %>% sum()
+```
+
+This table contains data for HCTs in `r n_patients` patients. Of those, `r n_patients_1hct` received 1 HCT, `r n_patients_2hct` received 2 HCTs, and `r n_patients_3hct` received 3 HCTs. The minimum time between two HCTs for the same patient was `r min_time_diff` days, the maximum was `r max_time_diff` days, and the median was `r median_time_diff` days.
+
+The most commonm disease among these patients was Leukemia, with `r unique_patients %>% filter(Disease == "Leukemia") %>% pull() %>% length()` cases. Here's the frequency distribution of all diseases: 
+
+```{r, echo = FALSE}
+print(disease_plot)
+```
+
+The most common source for the HCT was T-Cell depleted, used in `r unique_patients %>% filter(HCTSource == "TCD") %>% pull() %>% length()` transplants. Here's the freqeuncy distribution of the transplant sources:
+
+```{r, echo = FALSE}
+print(hct_source_plot)
+```
+
+Finally, all `r n_patients_na_wbc` patients were included in a [previous study on the role of the microbiota in  white blood cell dynamics](https://doi.org/10.1038/s41586-020-2971-8); `r n_patients_na_fmt` of the patients were included in a [previous study describing an autologous faecal microbiota trial](https://doi.org/10.1126/scitranslmed.aap9489); and `r n_patients_na_nejm` of the patients were part of a [previous study linking microbiome diversity to mortality during HCT](https://www.nejm.org/doi/full/10.1056/NEJMoa1900623).
+ 
+***Issues to check***
+
+- Some patients have NA in the Disease column for one of the HCT records even when another record specified a disease–-why?
+
+- What is the actual source for the TCD cases?

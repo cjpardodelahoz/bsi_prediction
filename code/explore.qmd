@@ -150,3 +150,132 @@ Finally, all `r n_patients_na_wbc` patients were included in a [previous study o
 - Some patients have NA in the Disease column for one of the HCT records even when another record specified a disease–-why?
 
 - What is the actual source for the TCD cases?
+
+### Anti-infective drug metadata
+
+Then we looked at the data on anti-infective drug administration.
+
+```{r}
+tbldrug <- read_csv("data/tbldrug.csv")
+head(tbldrug)
+```
+
+We made sure all patients in the antibiotic data are present in the transplant metadata:
+
+```{r, echo = FALSE}
+# Check if all PatientIDs in tbldrug are present in tblhctmeta
+missing_patient_ids <- tbldrug %>%
+    filter(!PatientID %in% tblhctmeta$PatientID) %>%
+    pull(PatientID) %>%
+    unique()
+
+# Output the result
+if (length(missing_patient_ids) == 0) {
+    message("All PatientIDs in tbldrug are present in tblhctmeta.")
+} else {
+    message("The following PatientIDs in tbldrug are not present in tblhctmeta: ", paste(missing_patient_ids, collapse = ", "))
+}
+```
+
+The table includes data for `r tbldrug %>% pull(Category) %>% unique() %>% length()` categories of anti-infectives:
+
+```{r, echo = FALSE}
+tbldrug %>% pull(Category) %>% unique()
+```
+
+Here's a table with anti-infective drugs administered to the patients:
+
+```{r, echo = FALSE}
+# Table of unique drugs, their categories, and the number of patients who received them
+unique_drugs <- tbldrug %>%
+    group_by(Factor, Category) %>%
+    summarise(n_patients = n_distinct(PatientID)) %>%
+    arrange(desc(n_patients), Category, Factor)
+
+print(unique_drugs, n = 82)
+```
+
+Next, we were interested in the timeline of administration of anti-infective drugs. Specifically, we wanted to know if there were time periods relative to the transplant where most patients were under a similar anti-infective drug regime. This could guide the selection of specific time frames where model predicitons of blood stream infections might be more accurate and clinically relevant.
+
+```{r, echo = FALSE}
+# Load RColorBrewer for color palettes
+library(RColorBrewer)
+
+# Filter patients with a single HCT
+single_hct_patients <- tblhctmeta %>%
+        group_by(PatientID) %>%
+        filter(n() == 1) %>%
+        pull(PatientID)
+
+# Most common drugs for plotting
+top_drugs <- tbldrug %>%
+    group_by(Category) %>%
+    filter(n() > 400) %>%
+    pull(Category) %>%
+    unique()
+
+# Filter the drug data for these patients
+single_hct_drug_data <- tbldrug %>%
+        filter(PatientID %in% single_hct_patients & Category %in% top_drugs)
+
+# Filter the data to the specified range
+filtered_drug_data_oral <- single_hct_drug_data %>%
+        filter(StartDayRelativeToNearestHCT > -30 & StopDayRelativeToNearestHCT < 30 & Route == "oral")
+
+# Filter the data to the specified range
+filtered_drug_data_iv <- single_hct_drug_data %>%
+        filter(StartDayRelativeToNearestHCT > -30 & StopDayRelativeToNearestHCT < 30 & Route == "intravenous")
+
+# Define a color palette with 21 different colors
+color_palette <- brewer.pal(n = 11, name = "Paired")
+#if (length(unique(single_hct_drug_data$Category)) > 9) {
+#    color_palette <- colorRampPalette(color_palette)(length(unique(single_hct_drug_data$Category)))
+#}
+
+# Create a dumbbell plot with each PatientID/Category combination as a different row
+drug_timeline_iv <- filtered_drug_data_iv %>%
+    ggplot(aes(y = interaction(PatientID, Category), x = StartDayRelativeToNearestHCT, xend = StopDayRelativeToNearestHCT, color = Category)) +
+    geom_segment(aes(x = StartDayRelativeToNearestHCT, xend = StopDayRelativeToNearestHCT, y = interaction(PatientID, Category), yend = interaction(PatientID, Category)), linewidth = 0.08) +
+    scale_color_manual(values = setNames(color_palette, sort(unique(filtered_drug_data_iv$Category))), breaks = sort(unique(filtered_drug_data_iv$Category), decreasing = TRUE)) +
+    labs(title = "Intravenous anti-infective drugs",
+        x = "Time Relative to Nearest HCT (days)",
+         y = "Patient ID / Drug Category",
+         color = "Drug Category") +
+    scale_x_continuous(breaks = c(-30, -20, -10, -2, 0, 7, 10, 12, 20, 30)) +
+    custom_theme +
+    theme(axis.text.y = element_blank(),
+          axis.ticks.y = element_blank(),
+          legend.background = element_rect(fill = "transparent"),
+          legend.key = element_rect(fill = "transparent"),
+          legend.key.size = unit(1.5, "lines")) +
+    guides(color = guide_legend(override.aes = list(linewidth = 3))) +
+    geom_vline(xintercept = c(-10, -2, 7, 12), linetype = "dashed")
+
+# Create a dumbbell plot with each PatientID/Category combination as a different row
+drug_timeline_oral <- filtered_drug_data_oral %>%
+    ggplot(aes(y = interaction(PatientID, Category), x = StartDayRelativeToNearestHCT, xend = StopDayRelativeToNearestHCT, color = Category)) +
+    geom_segment(aes(x = StartDayRelativeToNearestHCT, xend = StopDayRelativeToNearestHCT, y = interaction(PatientID, Category), yend = interaction(PatientID, Category)), linewidth = 0.08) +
+    scale_color_manual(values = setNames(color_palette, sort(unique(filtered_drug_data_iv$Category))), breaks = sort(unique(filtered_drug_data_iv$Category), decreasing = TRUE)) +
+    labs(title = "Oral anti-infective drugs",
+        x = "Time Relative to Nearest HCT (days)",
+         y = "Patient ID / Drug Category",
+         color = "Drug Category") +
+    scale_x_continuous(breaks = c(-30, -20, -10, -2, 0, 7, 10, 12, 20, 30)) +
+    custom_theme +
+    theme(axis.text.y = element_blank(),
+          axis.ticks.y = element_blank(),
+          legend.background = element_rect(fill = "transparent"),
+          legend.key = element_rect(fill = "transparent"),
+          legend.key.size = unit(1.5, "lines")) +
+    guides(color = guide_legend(override.aes = list(linewidth = 3))) +
+    geom_vline(xintercept = c(-10, -2, 7, 12), linetype = "dashed")
+
+#ggsave("plot.pdf")
+```
+
+There does seem to be some time frames where the anti-infective drugs administered are highly similar across patients:
+
+```{r, echo = FALSE}
+print(drug_timeline_iv)
+print(drug_timeline_oral)
+```

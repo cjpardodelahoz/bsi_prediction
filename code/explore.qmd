@@ -279,3 +279,116 @@ There does seem to be some time frames where the anti-infective drugs administer
 print(drug_timeline_iv)
 print(drug_timeline_oral)
 ```
+
+### Infections data
+
+Let's now examine the data on infections. This is the table that includes all infections, which is larger than what is available with the SD paper.
+
+```{r}
+tblinfections <- read_csv("data/allinfectionsSD.csv")
+head(tblinfections)
+```
+
+We checked if all patients for which we have infection data are included in the transplant metadata:
+
+```{r}
+# Check if all PatientIDs in tblinfections are present in tblhctmeta
+missing_patient_ids_infections <- tblinfections %>%
+    filter(!PatientID %in% tblhctmeta$PatientID) %>%
+    pull(PatientID) %>%
+    unique()
+
+# Output the result
+if (length(missing_patient_ids_infections) == 0) {
+    message("All PatientIDs in tblinfections are present in tblhctmeta.")
+} else {
+    message("The following PatientIDs in tblinfections are not present in tblhctmeta: ", paste(missing_patient_ids_infections, collapse = ", "))
+}
+```
+
+So, there are `r length(missing_patient_ids_infections)` patients that are not included. I will exclude them for now.
+
+It also looks like the time of infections in this case is relative to secret reference selected for each patient, so we need to center the infections relative to the transplants:
+
+```{r}
+# Function to calculate DayRelativeToNearestHCT for infections data
+calculate_day_relative_to_nearest_hct <- function(patient_id, infection_day, hct_meta) {
+    patient_hcts <- hct_meta %>%
+        filter(PatientID == patient_id) %>%
+        pull(TimepointOfTransplant)
+    nearest_hct <- patient_hcts[which.min(abs(infection_day - patient_hcts))]
+    infection_day - nearest_hct
+}
+
+# Filter the infections data to only include patients present in tblhctmeta
+filtered_infections <- tblinfections %>%
+    filter(PatientID %in% tblhctmeta$PatientID)
+
+# Add the DayRelativeToNearestHCT
+filtered_infections <- filtered_infections %>%
+    rowwise() %>%
+    mutate(DayRelativeToNearestHCT = calculate_day_relative_to_nearest_hct(PatientID, Day, tblhctmeta)) %>%
+    ungroup()
+
+    # Show a table with the infection Day, HCT day and DayRelativeToNearestHCT for the first three unique patients
+    spot_check_table <- filtered_infections %>%
+        filter(PatientID %in% unique(filtered_infections$PatientID)[1:3]) %>%
+        #select(PatientID, Day, DayRelativeToNearestHCT) %>%
+        left_join(tblhctmeta %>% select(PatientID, TimepointOfTransplant), by = "PatientID") %>%
+        arrange(PatientID, Day)
+
+    print(spot_check_table)
+
+```
+
+Here's the frequency of infections caused by each agent:
+
+```{r, echo: FALSE}
+    # Tally the number of infections caused by each InfectiousAgent
+    infectiousagent_tally <- filtered_infections %>%
+        count(InfectiousAgent) %>%
+        arrange(desc(n))
+    
+    print(infectiousagent_tally, n = 30)
+```
+
+Let's look at the timing of the infections by infectious agent:
+
+```{r}
+    hist(filtered_infections$DayRelativeToNearestHCT)
+
+    filtered_infections %>%
+    filter(DayRelativeToNearestHCT >= -30 & DayRelativeToNearestHCT <= 30) %>%
+    pull(DayRelativeToNearestHCT) %>%
+    hist()
+
+    # Function to create histograms for the top infectious agents
+    create_histogram <- function(agent, data) {
+        data %>%
+            filter(InfectiousAgent == agent) %>%
+            ggplot(aes(x = DayRelativeToNearestHCT)) +
+            geom_histogram(binwidth = 1, fill = "gray50", color = "black") +
+            labs(title = paste("Infections by", agent),
+                 x = "Days Relative to Nearest HCT",
+                 y = "Frequency") +
+            custom_theme
+    }
+
+    # Get the top 20 most frequent infectious agents
+    top_agents <- infectiousagent_tally %>%
+        top_n(20, n) %>%
+        pull(InfectiousAgent)
+
+    # Create and print histograms for each of the top 20 infectious agents
+    histograms <- lapply(top_agents, create_histogram, data = filtered_infections)
+    for (hist in histograms) {
+        print(hist)
+    }
+
+```
+
+
+***Issues to check***
+
+- Why are some patients for which we have infection data not included in the transplant metadata?
+- When an infection starts, do they do blood cultere tests every day? or why are there some cases (e.g., 840) with data for two consecutive days?

@@ -1,0 +1,35 @@
+---
+title: "Software setup"
+format: html
+---
+
+I am using `sh conda --version` to manage software environments. The YAML files for the conda environments are in `software/conda`
+
+```{sh echo=FALSE eval=FALSE}
+# Dir for conda ymls
+mkdir -p software/conda
+
+# R 4.4.2 and some useful packages
+conda create -n r-4.4.2 -c conda-forge  -c bioconda -c defaults \
+    r-base=4.4.* \
+    r-essentials \
+    r-quarto \
+    r-irkernel \
+    ipykernel \
+    r-httpgd \
+    r-svglite \
+    r-tidyverse \
+    r-rcolorbrewer \
+    r-scales \
+    r-ggnewscale \
+    r-patchwork \
+    r-ggbeeswarm \
+    r-cowplot \
+    r-igraph \
+    r-data.table \
+    r-biocmanager \
+    r-languageserver
+
+# Export YMLs
+conda env export -n r-4.4.2 > software/conda/r-4.4.2.yml
+```

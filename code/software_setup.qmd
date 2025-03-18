@@ -5,13 +5,13 @@ format: html
 
 I am using `sh conda --version` to manage software environments. The YAML files for the conda environments are in `software/conda`
 
-```{sh echo=FALSE eval=FALSE}
+```{sh, echo=FALSE eval=FALSE}
 # Dir for conda ymls
 mkdir -p software/conda
 
 # R 4.4.2 and some useful packages
 conda create -n r-4.4.2 -c conda-forge  -c bioconda -c defaults \
-    r-base=4.4.* \
+    r-base=4.4.2 \
     r-essentials \
     r-quarto \
     r-irkernel \
@@ -31,5 +31,12 @@ conda create -n r-4.4.2 -c conda-forge  -c bioconda -c defaults \
     r-languageserver
 
 # Export YMLs
-conda env export -n r-4.4.2 > software/conda/r-4.4.2.yml
+conda env export --name r-4.4.2 --from-history | sed "s|^prefix.*||" > software/conda/r-4.4.2.yml # I added the version numbers manually
+```
+
+Install the conda environments from the YMLs
+
+```{sh}
+# Create conda environments from YML file
+conda env create -f software/conda/r-4.4.2.yml
 ```

@@ -3,7 +3,7 @@ title: "Exploring clinical and microbiome data from allo-HCT patients (Liao et a
 format: html
 ---
 
-This is my initial exploration of the data from Liao et al 2021.
+This is my initial exploration of the data from Liao et al 2021. Remember that the `data/` directory is a symbolic link to the Xavier lab shared drive.
 
 ```{r}
 # Load libraries

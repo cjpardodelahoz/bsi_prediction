@@ -40,3 +40,10 @@ Install the conda environments from the YMLs:
 # Create conda environments from YML file
 conda env create -f software/conda/r-4.4.2.yml
 ```
+
+I will store data and document files in the Xavier hard drive directly and create symlinks within each machine:
+
+```{sh, eval=FALSE}
+ln -s /Volumes/XavierLab/carlos/bsi_prediction/data data
+ln -s /Volumes/XavierLab/carlos/bsi_prediction/document document
+```

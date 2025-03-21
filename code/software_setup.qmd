@@ -1,15 +1,16 @@
 ---
 title: "Software setup"
+engine: knitr
 format: html
 ---
 
-I am using `sh conda --version` to manage software environments. The YAML files for the conda environments are in `software/conda`
+I am using `conda 25.1.1` to manage software environments. The YAML files for the conda environments are in `software/conda`
 
-```{sh, echo=FALSE eval=FALSE}
+```{bash, eval=FALSE}
 # Dir for conda ymls
 mkdir -p software/conda
 
-# R 4.4.2 and some useful packages
+# R 4.4.2, Python 3.13.2, and some useful packages
 conda create -n r-4.4.2 -c conda-forge  -c bioconda -c defaults \
     r-base=4.4.2 \
     r-essentials \
@@ -36,14 +37,14 @@ conda env export --name r-4.4.2 --from-history | sed "s|^prefix.*||" > software/
 
 Install the conda environments from the YMLs:
 
-```{sh, eval=FALSE}
+```{bash, eval=FALSE}
 # Create conda environments from YML file
 conda env create -f software/conda/r-4.4.2.yml
 ```
 
 I will store data and document files in the Xavier hard drive directly and create symlinks within each machine:
 
-```{sh, eval=FALSE}
+```{bash, eval=FALSE}
 ln -s /Volumes/XavierLab/carlos/bsi_prediction/data data
 ln -s /Volumes/XavierLab/carlos/bsi_prediction/document document
 ```

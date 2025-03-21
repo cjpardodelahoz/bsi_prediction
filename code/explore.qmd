@@ -1,6 +1,9 @@
 ---
 title: "Exploring clinical and microbiome data from allo-HCT patients (Liao et al 2021)"
-format: html
+format:
+  html:
+    code-fold: true
+    code-summary: "Show the code"
 ---
 
 This is my initial exploration of the data from Liao et al 2021. Remember that the `data/` directory is a symbolic link to the Xavier lab shared drive.
@@ -17,12 +20,10 @@ library(tidyverse, quietly = TRUE)
 We first explored the transplant metadata:
 
 ```{r}
+# EXPLORING TRANSPLANT METADATA
+
 tblhctmeta <- read_csv("data/tblhctmeta.csv")
 head(tblhctmeta)
-```
-
-```{r, echo = FALSE}
-# EXPLORING TRANSPLANT METADATA
 
 # Total number of patients
 n_patients <- tblhctmeta$PatientID %>% unique() %>% length()
@@ -133,13 +134,13 @@ This table contains data for HCTs in `r n_patients` patients. Of those, `r n_pat
 
 The most commonm disease among these patients was Leukemia, with `r unique_patients %>% filter(Disease == "Leukemia") %>% pull() %>% length()` cases. Here's the frequency distribution of all diseases: 
 
-```{r, echo = FALSE}
+```{r}
 print(disease_plot)
 ```
 
 The most common source for the HCT was T-Cell depleted, used in `r unique_patients %>% filter(HCTSource == "TCD") %>% pull() %>% length()` transplants. Here's the freqeuncy distribution of the transplant sources:
 
-```{r, echo = FALSE}
+```{r}
 print(hct_source_plot)
 ```
 
@@ -162,7 +163,7 @@ head(tbldrug)
 
 We made sure all patients in the antibiotic data are present in the transplant metadata:
 
-```{r, echo = FALSE}
+```{r}
 # Check if all PatientIDs in tbldrug are present in tblhctmeta
 missing_patient_ids <- tbldrug %>%
     filter(!PatientID %in% tblhctmeta$PatientID) %>%
@@ -179,13 +180,13 @@ if (length(missing_patient_ids) == 0) {
 
 The table includes data for `r tbldrug %>% pull(Category) %>% unique() %>% length()` categories of anti-infectives:
 
-```{r, echo = FALSE}
+```{r}
 tbldrug %>% pull(Category) %>% unique()
 ```
 
 Here's a table with anti-infective drugs administered to the patients:
 
-```{r, echo = FALSE}
+```{r}
 # Table of unique drugs, their categories, and the number of patients who received them
 unique_drugs <- tbldrug %>%
     group_by(Factor, Category) %>%
@@ -197,7 +198,7 @@ print(unique_drugs, n = 82)
 
 Next, we were interested in the timeline of administration of anti-infective drugs. Specifically, we wanted to know if there were time periods relative to the transplant where most patients were under a similar anti-infective drug regime. This could guide the selection of specific time frames where model predicitons of blood stream infections might be more accurate and clinically relevant.
 
-```{r, echo = FALSE}
+```{r}
 # Load RColorBrewer for color palettes
 library(RColorBrewer)
 
@@ -275,7 +276,7 @@ drug_timeline_oral <- filtered_drug_data_oral %>%
 
 There does seem to be some time frames where the anti-infective drugs administered are highly similar across patients:
 
-```{r, echo = FALSE}
+```{r}
 print(drug_timeline_iv)
 print(drug_timeline_oral)
 ```
@@ -343,7 +344,7 @@ filtered_infections <- filtered_infections %>%
 
 Here's the frequency of infections caused by each agent:
 
-```{r, echo: FALSE}
+```{r}
     # Tally the number of infections caused by each InfectiousAgent
     infectiousagent_tally <- filtered_infections %>%
         count(InfectiousAgent) %>%
@@ -355,12 +356,12 @@ Here's the frequency of infections caused by each agent:
 Let's look at the timing of the infections by infectious agent:
 
 ```{r}
-    hist(filtered_infections$DayRelativeToNearestHCT)
+    #hist(filtered_infections$DayRelativeToNearestHCT)
 
-    filtered_infections %>%
-    filter(DayRelativeToNearestHCT >= -30 & DayRelativeToNearestHCT <= 30) %>%
-    pull(DayRelativeToNearestHCT) %>%
-    hist()
+    #filtered_infections %>%
+    #filter(DayRelativeToNearestHCT >= -30 & DayRelativeToNearestHCT <= 30) %>%
+    #pull(DayRelativeToNearestHCT) %>%
+    #hist()
 
     # Function to create histograms for the top infectious agents
     create_histogram <- function(agent, data) {
@@ -384,11 +385,112 @@ Let's look at the timing of the infections by infectious agent:
     for (hist in histograms) {
         print(hist)
     }
-
 ```
 
-
+Based on this, we will probably need to trim the infection data. One way is to consider at most 30 days prior to transplant (except if WBC < 0.5 before that) and up to engraftment (see WBC data below
+)
 ***Issues to check***
 
 - Why are some patients for which we have infection data not included in the transplant metadata?
 - When an infection starts, do they do blood cultere tests every day? or why are there some cases (e.g., 840) with data for two consecutive days?
+    - Yes, they are tested afterwards. Will consider each positive day as an "independent infection".
+
+### White blood cell (WBC) count data
+
+We now explore the WBC count data:
+
+```{r}
+# Load the data
+tblwbc <- read_csv("data/tblwbc.csv")
+head(tblwbc)
+```
+
+Let's make sure that all patients in this dataset are included in the transplant metadata:
+
+```{r}
+# Check if all PatientIDs in tblwbc are present in tblhctmeta
+missing_patient_ids_wbc <- tblwbc %>%
+    filter(!PatientID %in% tblhctmeta$PatientID) %>%
+    pull(PatientID) %>%
+    unique()
+
+# Output the result
+if (length(missing_patient_ids_wbc) == 0) {
+    message("All PatientIDs in tblwbc are present in tblhctmeta.")
+} else {
+    message("The following PatientIDs in tblwbc are not present in tblhctmeta: ", paste(missing_patient_ids_wbc, collapse = ", "))
+}
+```
+
+The table contains counts for WBCtotal, Neutrophils, and Lymphocytes. To summarize this information, I added a Status column with the following values:
+
+- `PreNeutropenia` for the days before the first dip of the WBCtotal below 500 cells/uL.
+- `NeutropeniaStart` for the first day where the WBCtotal fell below 500 cells/uL. This cannot be the first day for which the measurement is available for a patient. For patients whose first WBC data point is already below 500 cells/uL, the Status of the first measurement day is `Neutropenia` because we cannot determine when it started.
+- `Neutropenia` for the days subsequent to the neutropenia start but before engrafment where WBCtotal was below 500 cells/uL.
+- `TransitionToEngrafment` for the first four consecutive days after neutropenia and HCT where the WBCtotal was above 500 cells/uL.
+- `Engraftment` for the fourth consecutive day after neutropenia and HCT where the WBCtotal was above 500 cells/uL.
+- `PostEngraftment` for all days following engrafment where the WBCtotal was above 500 cells/uL.
+- `NeutropeniaPostEngraftment` for all days following engrafment where the WBCtotal was below 500 cells/uL.
+
+For now, the Status column will have NAs for days pre-engrafent where the WBCtotal was above 500 cells/uL for less than four consecutive days. Other cases (e.g., 1671) with NA Status correspond to patients whose first available measurement was consistent with neutropenia. Therefore, the`NeutropeniaStart` cannot be determined and there is no `PreNeutropenia` phase even if the patient had WBCtotal above 500 cells/uL before the HCT. In such days, Status is NA.
+
+Here's an example of the Status scoring for one patient:
+
+```{r}
+# Filter the WBC data for patients with a single HCT and WBCtotal as BloodCellType
+filtered_wbc_data <- tblwbc %>%
+    filter(PatientID %in% single_hct_patients & BloodCellType == "WBCtotal") %>%
+    mutate(Value = as.numeric(str_replace(Value, "<0.1", "0.09")))
+
+# Add a Status column to the filtered_wbc_data
+engraftment_threshold <- 3
+filtered_wbc_status_data <- filtered_wbc_data %>%
+    #filter(PatientID == "1001") %>%
+    group_by(PatientID) %>%
+    arrange(DayRelativeToNearestHCT) %>%
+    mutate(
+        Status = case_when(
+            Value < 0.5 & cumall(lag(Value, default = Inf) >= 0.5) & row_number() > 1 ~ "NeutropeniaStart",
+            Value < 0.5 ~ "Neutropenia",
+            TRUE ~ NA_character_
+        )
+    ) %>%
+    mutate(
+        Status = case_when(
+            Value >= 0.5 & (purrr::map_lgl(row_number(), ~ any(Status[(.x + 1):n()] == "NeutropeniaStart")) | all(is.na(Status))) ~ "PreNeutropenia",
+            DayRelativeToNearestHCT > 0 & purrr::map_lgl(row_number(), ~ all(Value[max(1, (.x - engraftment_threshold)):.x] >= 0.5)) 
+            & lag(Status, (engraftment_threshold + 1), default = NA) %in% c("Neutropenia", "NeutropeniaStart") ~ "Engraftment",
+            TRUE ~ Status
+        )
+    ) %>%
+    mutate(
+        Status = case_when(
+            Value >= 0.5 & purrr::map_lgl(row_number(), ~ any(Status[1:(.x - 1)] == "Engraftment")) ~ "PostEngraftment",
+            Status == "Neutropenia" & purrr::map_lgl(row_number(), ~ any(Status[1:(.x - 1)] == "Engraftment")) ~ "NeutropeniaPostEngraftment",
+            Value >= 0.5 & purrr::map_lgl(row_number(), ~ any(Status[(.x + 1):(.x + engraftment_threshold)] == "Engraftment")) ~ "TransitionToEngrafment",
+            TRUE ~ Status
+        )
+    ) %>%
+    ungroup()
+
+# Print example of Status for patient a single patient (1001)
+print(filtered_wbc_status_data %>% filter(PatientID == "1001"), n = 100)
+```
+
+Let's visualize the dynamics of these WBCs relative to the transplant timeline:
+
+```{r}
+# Create a line plot showing WBCtotal for each patient through time
+wbc_plot <- filtered_wbc_data %>%
+    ggplot(aes(x = DayRelativeToNearestHCT, y = Value, group = PatientID, color = as.factor(PatientID))) +
+    geom_line(alpha = 0.2) +
+    labs(title = "WBC Total Dynamics for Single HCT Patients",
+         x = "Days Relative to Nearest HCT",
+         y = "WBC Total",
+         color = "Patient ID") +
+    custom_theme +
+    theme(legend.position = "none")  # Hide legend for clarity
+
+# Print the plot
+print(wbc_plot)
+```

@@ -9,10 +9,15 @@ website:
     style: "floating"
     search: true
     contents:
+      - section: "Introduction"
+        contents:
+          - code/software_setup.qmd
       - section: "Data exploration"
         contents:
           - code/explore.qmd
-
+      - section: "BSI logistic regression models" 
+        contents:
+          - code/clinical_model.qmd
 format:
   html:
     theme:

@@ -1,0 +1,9 @@
+---
+title: "BSI model with clinical data"
+format:
+  html:
+    code-fold: true
+    code-summary: "Show the code"
+---
+
+## Data preparation

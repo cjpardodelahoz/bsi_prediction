@@ -577,3 +577,75 @@ print(status_plot)
 - Why are some patients for which we have infection data not included in the transplant metadata?
 - When an infection starts, do they do blood cultere tests every day? or why are there some cases (e.g., 840) with data for two consecutive days?
     - Yes, they are tested afterwards. Will consider each positive day as an "independent infection".
+
+### Body temperature data
+
+Let's make sure that all the temperature data is from the HCT patients:
+
+```{r}
+# Load the temperature data
+tbltemperature <- read_csv("data/tbltemperature.csv")
+
+# Check if all PatientIDs in tbltemperature are present in tblhctmeta
+missing_patient_ids_temperature <- tbltemperature %>%
+    filter(!PatientID %in% tblhctmeta$PatientID) %>%
+    pull(PatientID) %>%
+    unique()
+
+# Output the result
+if (length(missing_patient_ids_temperature) == 0) {
+    message("All PatientIDs in tbltemperature are present in tblhctmeta.")
+} else {
+    message("The following PatientIDs in tbltemperature are not present in tblhctmeta: ", paste(missing_patient_ids_temperature, collapse = ", "))
+}
+```
+
+There are `r tbltemperature %>% pull(PatientID) %>% unique %>% length` patients in the temperature table, and 11 of those are not included in the HCT dataset.
+
+Let's explore when fever (T > 100.4 F) happens in the -30 to 50 days relative to HCT window:
+
+```{r}
+# Filter the temperature data for fever cases and the specified range
+fever_data <- tbltemperature %>%
+    filter(MaxTemperature > 100.4 & between(DayRelativeToNearestHCT, -30, 50))
+
+# Create a histogram of DayRelativeToNearestHCT for fever cases
+fever_histogram <- fever_data %>%
+    ggplot(aes(x = DayRelativeToNearestHCT)) +
+    geom_histogram(binwidth = 1, fill = "gray70", color = "black", alpha = 0.7) +
+    labs(title = "Fever Cases Relative to HCT",
+         x = "Days Relative to Nearest HCT",
+         y = "Frequency (patient-days)") +
+    custom_theme
+
+# Print the histogram
+print(fever_histogram)
+```
+
+### Mucositis data
+
+Let's check the mucositis data.
+
+```{r}
+# Load the mucositis data
+tblmucositis <- read_csv("data/mucositisSD.csv")
+
+# Check if all PatientIDs in tblmucositis are present in tblhctmeta
+n_missing_patient_ids_mucositis <- tblmucositis %>%
+    filter(!PatientID %in% tblhctmeta$PatientID) %>%
+    pull(PatientID) %>%
+    unique() %>%
+    length()
+# Check if all PatientIDs in tblmucositis are present in tblhctmeta
+n_patient_ids_mucositis <- tblmucositis %>%
+    filter(PatientID %in% tblhctmeta$PatientID) %>%
+    pull(PatientID) %>%
+    unique() %>%
+    length()
+```
+
+The mucositis table seems to be on the [World Health Organization Oral Mucositis grading scale](https://www.ncbi.nlm.nih.gov/books/NBK65881/table/CDR0000062870__1425/?report=objectonly). The table has data for `r n_patient_ids_mucositis` patients part of the HCT dataset and `r n_missing_patient_ids_mucositis` that are not part of the dataset.
+
+***Issues to check***
+
+- Confirm how the mucositis data was collected and the meaning of the scale.

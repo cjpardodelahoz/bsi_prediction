@@ -500,7 +500,7 @@ Let's look at the timing of the infections by infectious agent during days -30 t
             geom_histogram(binwidth = 1, fill = "gray50", color = "black") +
             labs(title = paste("Infections by", agent),
                  x = "Days Relative to Nearest HCT",
-                 y = "Frequency") +
+                 y = "Frequency (patient-days)") +
             custom_theme
     }
 
@@ -548,25 +548,28 @@ status_colors <- c("NeutropeniaStart" = "#FDD49E",  # Pastel orange
 status_summary <- status_summary %>%
     mutate(Status = factor(Status, levels = status_levels))
 
-# Create a bar plot for each infectious agent
+# Create a bar plot for each infectious agent   #TO-DO Add te numbers above the bars to the plot
 status_plot <- status_summary %>%
     ggplot(aes(x = Status, y = count, fill = Status)) +
     geom_bar(stat = "identity") +
+    geom_text(aes(label = count), vjust = -0.5, size = 3) +
     facet_wrap(~ InfectiousAgent, scales = "free_y") +
     scale_fill_manual(values = status_colors) +
     labs(title = "Infections by immune status and pathogen",
          x = "Status",
-         y = "Count",
+         y = "Count (patient-days)",
          fill = "Status") +
     custom_theme +
     theme(axis.text.x = element_text(angle = 45, hjust = 1)) +
-    ylim(0, 170)
+    ylim(0, 200)
 
 # Print the plot
 print(status_plot)
 ```
 
-This confirms that neutropenia is the critical phase of risk of gut-borne infections, whereas the post-engraftment neutropenia does not pose a big risk---though I would need to account for the lower frequency of this status. The surprising thing for me is taht most *K. pneumoniae* infections happen during the post-engrafment phase. 
+ This confirms that neutropenia is the critical phase of risk of gut-borne infections, whereas the post-engraftment neutropenia does not pose a big risk---though I would need to account for the lower frequency of this status. 
+ 
+ The surprising thing for me is that most *K. pneumoniae* infections happen during the post-engrafment phase. *K. pneumoniae* tends to be susceptible to fluoroquinolones (e.g., ciprofloxacin), and most of these patients received fluoroquinolone prophylaxis, which explains why the incidence is relatively low at MSK. However, in a study by [Stoma et al. 2019](https://academic.oup.com/cid/article/73/11/e4627/5715406) from MKS patients, the *K. pneumoniae* infections happened during neutropenia, which is what I expected. Similar findings were reported by [Youssef et al. 2019](https://onlinelibrary.wiley.com/doi/abs/10.1111/petr.13610) from patients at the Children's Cancer Hostpital Egypt. I will need to check what the microbiome dynamics are like in the patients from MSK with post-engraftment *K. pneumoniae* infections.
 
 ***Issues to check***
 

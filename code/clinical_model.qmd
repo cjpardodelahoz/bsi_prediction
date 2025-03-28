@@ -7,3 +7,101 @@ format:
 ---
 
 ## Data preparation
+
+### Compile patient and clinical data
+
+We first need to assemble a table with all metadata available for each patient. I will focus on patients that had a single transplant.
+
+```{r}
+# Load required library
+library(tidyverse)
+
+# Load all tables that contain patient metadata
+tblhctmeta <- suppressMessages(read_csv("data/tblhctmeta.csv"))
+sexSD <- suppressMessages(read_csv("data/sexSD.csv")) %>%
+    distinct(cmicId, .keep_all = TRUE)
+
+# Table with all patient metadata
+patientmeta <- tblhctmeta %>%
+    left_join(sexSD, by = c("PatientID" = "cmicId")) %>%
+    select(PatientID, sex, Disease, TimepointOfTransplant, HCTSource, wbcPatientId, autoFmtPatientId, nejmPatientId)
+
+# Filter patients with a single HCT
+single_hct_patients <- tblhctmeta %>%
+        group_by(PatientID) %>%
+        filter(n() == 1) %>%
+        pull(PatientID)
+
+# Filter patient metadata to include only patients with a single HCT
+patientmeta_single_hct <- patientmeta %>%
+    filter(PatientID %in% single_hct_patients)
+```
+
+Now we will generate the table with patient-day observations from day -30 to +50 relative to the transplant:
+
+```{r}
+# Generate a sequence of days relative to transplant
+days_relative_to_transplant <- -30:50
+
+# Create a table with patient-day observations
+tblpatientday <- expand.grid(
+    PatientID = single_hct_patients,
+    DayRelativeToNearestHCT = days_relative_to_transplant
+) %>%
+    arrange(PatientID, DayRelativeToNearestHCT)
+
+# Display the first few rows of the table
+head(tblpatientday)
+```
+
+Let's add the clinical metadata to to the patient-day table:
+
+```{r}
+# Function to calculate DayRelativeToNearestHCT for infections data
+calculate_day_relative_to_nearest_hct <- function(patient_id, event_day, hct_meta) {
+    patient_hcts <- hct_meta %>%
+        filter(PatientID == patient_id) %>%
+        pull(TimepointOfTransplant)
+    nearest_hct <- patient_hcts[which.min(abs(event_day - patient_hcts))]
+    event_day - nearest_hct
+}
+
+# Load and prepare clinical data
+tbltemperature <- suppressMessages(read_csv("data/tbltemperature.csv")) %>%
+    select(-Timepoint)
+tblwbc <- suppressMessages(read_csv("data/tblwbc.csv")) %>%
+    filter(BloodCellType == "WBCtotal") %>%
+    mutate(WBCtotal = as.numeric(str_replace(Value, "<0.1", "0"))) %>%
+    select(PatientID, DayRelativeToNearestHCT, WBCtotal)
+tblmucositis <- suppressMessages(read_csv("data/mucositisSD.csv")) %>%
+    filter(PatientID %in% unique(tblhctmeta$PatientID)) %>%
+    rowwise() %>%
+    mutate(DayRelativeToNearestHCT = calculate_day_relative_to_nearest_hct(PatientID, Timepoint, tblhctmeta)) %>%
+    ungroup() %>%
+    select(-Timepoint)
+tbldrug <- suppressMessages(read_csv("data/tbldrug.csv"))
+
+# List of drugs to include
+antibiotics <- c("glycopeptide antibiotics", "quinolones", "penicillins", "sulfonamides", "cephalosporins", "carbapenems")
+
+# Add clinical data to patient-day table
+tblpatientday_clinical <- tblpatientday[1:160, ] %>%
+    left_join(tbltemperature,  by = c("PatientID", "DayRelativeToNearestHCT")) %>% # adding temperature
+    left_join(tblwbc, by = c("PatientID", "DayRelativeToNearestHCT")) %>% # adding wbc counts
+    left_join(tblmucositis, by = c("PatientID", "DayRelativeToNearestHCT")) %>% # adding mucositis data
+    mutate(!!!set_names(rep(list(NA), length(antibiotics)), antibiotics)) %>%
+    rowwise() %>%
+    mutate(across(all_of(antibiotics), ~ {
+        any(
+            tbldrug %>%
+                filter(
+                    PatientID == cur_data()$PatientID &
+                    Category == cur_column() &
+                    DayRelativeToNearestHCT >= StartDayRelativeToNearestHCT &
+                    DayRelativeToNearestHCT <= StopDayRelativeToNearestHCT
+                ) %>%
+                nrow() > 0
+        )
+    }, .names = "{.col}")) %>%
+    ungroup()
+```

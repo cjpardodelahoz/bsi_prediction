@@ -14,7 +14,7 @@ We first need to assemble a table with all metadata available for each patient. 
 
 ```{r}
 # Load required library
-library(tidyverse)
+suppressMessages(library(tidyverse))
 
 # Load all tables that contain patient metadata
 tblhctmeta <- suppressMessages(read_csv("data/tblhctmeta.csv"))
@@ -66,6 +66,29 @@ calculate_day_relative_to_nearest_hct <- function(patient_id, event_day, hct_met
     event_day - nearest_hct
 }
 
+# List of drugs to include
+antibiotics <- c("glycopeptide antibiotics", "quinolones", "penicillins", "sulfonamides", "cephalosporins", "carbapenems")
+
+# Pathogen groups
+gutborne <- c("Enterococcus_Faecium_Vancomycin_Resistant",
+                "Escherichia",
+                "Klebsiella_Pneumoniae",
+                "Enterobacter",
+                "Candida",
+                "Enterococcus_Faecium",
+                "Enterococcus_Faecalis",
+                "Klebsiella",
+                "Enterococcus_Vancomycin_Resistant")
+efaecium <- c("Enterococcus_Faecium_Vancomycin_Resistant",
+                "Enterococcus_Faecium")
+enterococcus <- c("Enterococcus_Faecium_Vancomycin_Resistant",
+                "Enterococcus_Faecium",
+                "Enterococcus_Faecalis",
+                "Enterococcus_Vancomycin_Resistant")
+klebsiella <- c("Klebsiella_Pneumoniae",
+                "Klebsiella")
+staph <- c("Coagulase_Negative_Staphylococcus", "Staphylococcus")
+
 # Load and prepare clinical data
 tbltemperature <- suppressMessages(read_csv("data/tbltemperature.csv")) %>%
     select(-Timepoint)
@@ -79,29 +102,98 @@ tblmucositis <- suppressMessages(read_csv("data/mucositisSD.csv")) %>%
     mutate(DayRelativeToNearestHCT = calculate_day_relative_to_nearest_hct(PatientID, Timepoint, tblhctmeta)) %>%
     ungroup() %>%
     select(-Timepoint)
-tbldrug <- suppressMessages(read_csv("data/tbldrug.csv"))
-
-# List of drugs to include
-antibiotics <- c("glycopeptide antibiotics", "quinolones", "penicillins", "sulfonamides", "cephalosporins", "carbapenems")
+tbldrug <- suppressMessages(read_csv("data/tbldrug.csv")) %>%
+    filter(Category %in% antibiotics) %>%
+    rowwise() %>%
+    mutate(DayRelativeToNearestHCT = list(StartDayRelativeToNearestHCT:StopDayRelativeToNearestHCT)) %>%
+    unnest(DayRelativeToNearestHCT) %>%
+    select(PatientID, Category, DayRelativeToNearestHCT) %>%
+    distinct() %>%
+    mutate(flag = 1) %>%
+    pivot_wider(names_from = Category, values_from = flag, values_fill = 0)
+tblinfections <- suppressMessages(read_csv("data/allinfectionsSD.csv")) %>%
+    filter(PatientID %in% tblhctmeta$PatientID) %>%
+    rowwise() %>%
+    mutate(DayRelativeToNearestHCT = calculate_day_relative_to_nearest_hct(PatientID, Day, tblhctmeta)) %>%
+    ungroup() %>%
+    distinct() %>%
+    mutate(flag = 1) %>%
+    pivot_wider(names_from = InfectiousAgent, values_from = flag, values_fill = 0) %>%
+    select(-Day) %>%
+    mutate()
 
 # Add clinical data to patient-day table
-tblpatientday_clinical <- tblpatientday[1:160, ] %>%
+tblpatientday_clinical <- tblpatientday %>%
     left_join(tbltemperature,  by = c("PatientID", "DayRelativeToNearestHCT")) %>% # adding temperature
     left_join(tblwbc, by = c("PatientID", "DayRelativeToNearestHCT")) %>% # adding wbc counts
     left_join(tblmucositis, by = c("PatientID", "DayRelativeToNearestHCT")) %>% # adding mucositis data
-    mutate(!!!set_names(rep(list(NA), length(antibiotics)), antibiotics)) %>%
-    rowwise() %>%
-    mutate(across(all_of(antibiotics), ~ {
-        any(
-            tbldrug %>%
-                filter(
-                    PatientID == cur_data()$PatientID &
-                    Category == cur_column() &
-                    DayRelativeToNearestHCT >= StartDayRelativeToNearestHCT &
-                    DayRelativeToNearestHCT <= StopDayRelativeToNearestHCT
-                ) %>%
-                nrow() > 0
-        )
-    }, .names = "{.col}")) %>%
-    ungroup()
+    rename(mucositis_grade = grade) %>%
+    left_join(tbldrug, by = c("PatientID", "DayRelativeToNearestHCT")) %>% # adding precomputed antibiotic flags
+    mutate(across(all_of(antibiotics), ~replace_na(.x, 0))) %>% # fill missing antibiotic columns with 0s
+    left_join(tblinfections, by = c("PatientID", "DayRelativeToNearestHCT")) %>% # Adding infections data
+    mutate(across(all_of(colnames(tblinfections)[2:ncol(tblinfections)]), ~replace_na(.x, 0))) %>% # fill missing infections with 0s
+    mutate(
+        gutborne_infection = if_any(all_of(gutborne), ~ .x == 1),
+        Enterococcus_faecium_infection = if_any(all_of(efaecium), ~ .x == 1),
+        Enterococcus_infection = if_any(all_of(enterococcus), ~ .x == 1),
+        Klebsiella_infection = if_any(all_of(klebsiella), ~ .x == 1),
+        Staphylococcus_culture = if_any(all_of(staph), ~ .x == 1),
+        Escherichia_infection = Escherichia,
+        Candida_infection = Candida
+    ) %>%
+    mutate(across(ends_with("_infection"), as.integer), # Convert logical flags to integers
+            across(c("DayRelativeToNearestHCT",
+                "mucositis_grade",
+                all_of(antibiotics),
+                Staphylococcus_culture
+                ), as.character)) %>% # Convert applicable variables to character
+    select(PatientID,
+        DayRelativeToNearestHCT,
+        MaxTemperature,
+        WBCtotal,
+        mucositis_grade,
+        all_of(antibiotics),
+        Staphylococcus_culture,
+        ends_with("_infection"))
+
+as_tibble(tblpatientday_clinical)
 ```
+
+Notice that some varialbles are not available for every day. We have to either delete those entries completely or extrapolate their value from the closest previous measurement before modeling. 
+
+### Dealing with missing data
+
+#### Strategy 1: Remove missing data
+
+Here's a version after removing rows with missing data:
+
+```{r}
+tblpatientday_clinical_nomissing <- tblpatientday_clinical %>%
+    drop_na()
+
+as_tibble(tblpatientday_clinical_nomissing)
+```
+
+Here's a summary of the number of data points for each day after removing missing data:
+
+```{r}
+# Summarize the number of data points for each DayRelativeToNearestHCT
+day_summary <- tblpatientday_clinical_nomissing %>%
+    group_by(DayRelativeToNearestHCT) %>%
+    summarize(data_points = n(), .groups = "drop")
+
+as_tibble(day_summary)
+```
+
+Based on this, I will only consider data points from day -9 to 30 when removing missing data.
+
+```{r}
+tblpatientday_clinical_nomissing <- tblpatientday_clinical_nomissing %>%
+    filter(between(as.numeric(DayRelativeToNearestHCT), -9, 30)) 
+```
+
+#### Strategy 2: Fill missing data by extrapolating from previous days
+
+### Split into training and test subsets
+
+## Model fitting

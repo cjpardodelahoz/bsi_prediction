@@ -141,12 +141,11 @@ tblpatientday_clinical <- tblpatientday %>%
         Escherichia_infection = Escherichia,
         Candida_infection = Candida
     ) %>%
-    mutate(across(ends_with("_infection"), as.integer), # Convert logical flags to integers
-            across(c("DayRelativeToNearestHCT",
-                "mucositis_grade",
-                all_of(antibiotics),
-                Staphylococcus_culture
-                ), as.character)) %>% # Convert applicable variables to character
+    mutate(across(ends_with("_infection"), as.integer)) %>% # Convert logical flags to integers
+    mutate(DayRelativeToNearestHCT = factor(DayRelativeToNearestHCT), # Convert applicable variables to factors to treat them as categorical
+            mucositis_grade = factor(mucositis_grade, levels = 0:4),
+            across(all_of(antibiotics), ~ factor(.x, levels = 0:1)),
+            Staphylococcus_culture = factor(Staphylococcus_culture)) %>%
     select(PatientID,
         DayRelativeToNearestHCT,
         MaxTemperature,
@@ -168,17 +167,17 @@ Notice that some varialbles are not available for every day. We have to either d
 Here's a version after removing rows with missing data:
 
 ```{r}
-tblpatientday_clinical_nomissing <- tblpatientday_clinical %>%
+tblpatientday_clinical_nm <- tblpatientday_clinical %>%
     drop_na()
 
-as_tibble(tblpatientday_clinical_nomissing)
+as_tibble(tblpatientday_clinical_nm) # nm for no missing
 ```
 
 Here's a summary of the number of data points for each day after removing missing data:
 
 ```{r}
 # Summarize the number of data points for each DayRelativeToNearestHCT
-day_summary <- tblpatientday_clinical_nomissing %>%
+day_summary <- tblpatientday_clinical_nm %>%
     group_by(DayRelativeToNearestHCT) %>%
     summarize(data_points = n(), .groups = "drop")
 
@@ -188,12 +187,166 @@ as_tibble(day_summary)
 Based on this, I will only consider data points from day -9 to 30 when removing missing data.
 
 ```{r}
-tblpatientday_clinical_nomissing <- tblpatientday_clinical_nomissing %>%
-    filter(between(as.numeric(DayRelativeToNearestHCT), -9, 30)) 
+tblpatientday_clinical_nm <- tblpatientday_clinical_nm %>%
+    filter(between(as.numeric(as.character(DayRelativeToNearestHCT)), -9, 30))
 ```
 
 #### Strategy 2: Fill missing data by extrapolating from previous days
 
 ### Split into training and test subsets
 
-## Model fitting
+I will split the data into training and testing subsets by sampling the patients instead of the individual data points. I will use 70% of the patients for training and 30% for testing:
+
+```{r}
+set.seed(1945) # For reproducibility
+
+# Split patients into training and testing sets
+patients_nm <- unique(tblpatientday_clinical_nm$PatientID)
+train_patients_nm <- sample(patients_nm, size = floor(0.7 * length(patients_nm)))
+test_patients_nm <- setdiff(patients_nm, train_patients_nm)
+
+# Create training and testing datasets
+train_data_nm <- tblpatientday_clinical_nm %>%
+    filter(PatientID %in% train_patients_nm)
+
+test_data_nm <- tblpatientday_clinical_nm %>%
+    filter(PatientID %in% test_patients_nm)
+
+# Calculate percent split of data points
+percent_train <- (nrow(train_data_nm)/nrow(tblpatientday_clinical_nm))*100
+percent_test <- (nrow(test_data_nm)/nrow(tblpatientday_clinical_nm))*100
+
+as_tibble(train_data_nm)
+as_tibble(test_data_nm)
+```
+
+This results in a split of `r percent_train`% training data points and `r percent_test`% testing points.
+
+## Model fitting and evaluation
+
+### Logistic model of *Enterococcus* infections
+
+I will start by fitting a logistic regression that will aapproximate a discrete-time survival analysis by including the day relative to the transplant as a categorical predictor. This enables the calculation of odds ratios from the coefficients of other predictors that account for the time-variability in the risk of infection. By treating time as a categorical variable, the model can estimate the baseline hazard for each discrete time point without assuming a specific functional form for the hazard over time. This approach allows us to capture the dynamic nature of the risk of infection while simultaneously assessing the effects of other time-variable predictors (e.g., white blood cell counts, mucositis) on the odds of infection.
+
+Let's model *Enterococcus* infections using white blood cell counts, mucositis, and body temperature as predictors. The ex
+
+```{r}
+# Fit logistic regression model with intercept (default)
+logistic_model <- glm(
+    Enterococcus_infection ~ WBCtotal + mucositis_grade + MaxTemperature + DayRelativeToNearestHCT,
+    data = train_data_nm,
+    family = binomial(link = "logit")
+)
+
+# Summary of the model
+summary(logistic_model)
+```
+
+The estimated coefficients are qualitatively consistent with our expectations. Let's now evaluate the model performance using precision and recall on the test data.
+
+```{r}
+# Load required libraries
+library(PRROC)
+
+# Generate predicted probabilities for the test dataset
+test_predictions_nm <- test_data_nm %>%
+    mutate(predicted_prob = predict(logistic_model, newdata = test_data_nm, type = "response"))
+
+# Generate Precision-Recall Curve
+# Create a PRROC object
+pr_curve <- pr.curve(
+    scores.class0 = test_predictions_nm$predicted_prob[test_predictions_nm$Enterococcus_infection == 1],
+    scores.class1 = test_predictions_nm$predicted_prob[test_predictions_nm$Enterococcus_infection == 0],
+    curve = TRUE
+)
+
+# Extract precision and recall values from the pr_curve object
+pr_data <- data.frame(
+    Recall = pr_curve$curve[, 1],
+    Precision = pr_curve$curve[, 2]
+)
+
+# Define a custom theme for plots
+custom_theme <- theme(
+    panel.grid = element_blank(),
+    panel.background = element_blank(),
+    panel.border = element_rect(color = "black", fill = NA, linewidth = 0.75), 
+    axis.text = element_text(color = "black", size = 10)
+)
+
+# Plot PR curve
+ggplot(pr_data, aes(x = Recall, y = Precision)) +
+    geom_line(color = "black", size = 1) +
+    labs(
+        title = "Precision-Recall Curve",
+        x = "Recall",
+        y = "Precision"
+    ) +
+    scale_x_continuous(limits = c(0, 1)) +
+    scale_y_continuous(limits = c(0, 1)) +
+    annotate(
+        "text",
+        x = 0.5,
+        y = 0.8,
+        label = paste("AUC-PR:", round(pr_curve$auc.integral, 3)),
+        size = 6,
+        hjust = 0.5
+    ) +
+    custom_theme
+
+    # Extract precision, recall, and thresholds from the pr_curve object
+    precision_recall_data <- data.frame(
+        Threshold = pr_curve$curve[, 3],
+        Precision = pr_curve$curve[, 2],
+        Recall = pr_curve$curve[, 1]
+    )
+
+    # Plot precision and recall vs. threshold
+    ggplot(precision_recall_data, aes(x = Threshold)) +
+        geom_line(aes(y = Precision, color = "Precision"), size = 1) +
+        geom_line(aes(y = Recall, color = "Recall"), size = 1) +
+        labs(
+            title = "Precision and Recall vs. Decision Threshold",
+            x = "Decision Threshold",
+            y = "Value"
+        ) +
+        scale_color_manual(
+            name = "Metric",
+            values = c("Precision" = "blue", "Recall" = "red")
+        ) +
+        scale_x_continuous(limits = c(0, 1)) +
+        scale_y_continuous(limits = c(0, 1)) +
+        custom_theme
+
+        # Calculate precision and recall manually for each threshold
+        thresholds <- seq(0, 1, by = 0.01)
+        precision_recall_manual <- data.frame(Threshold = thresholds)
+
+        precision_recall_manual <- precision_recall_manual %>%
+            rowwise() %>%
+            mutate(
+                Precision = sum(test_predictions_nm$predicted_prob >= Threshold & test_predictions_nm$Enterococcus_infection == 1) /
+                            sum(test_predictions_nm$predicted_prob >= Threshold),
+                Recall = sum(test_predictions_nm$predicted_prob >= Threshold & test_predictions_nm$Enterococcus_infection == 1) /
+                         sum(test_predictions_nm$Enterococcus_infection == 1)
+            ) %>%
+            ungroup() %>%
+            replace_na(list(Precision = 0, Recall = 0)) # Replace NaN with 0 for cases with no predictions
+
+        # Plot precision and recall vs. threshold
+        ggplot(precision_recall_manual, aes(x = Threshold)) +
+            geom_line(aes(y = Precision, color = "Precision"), size = 1) +
+            geom_line(aes(y = Recall, color = "Recall"), size = 1) +
+            labs(
+                title = "Precision and Recall vs. Decision Threshold",
+                x = "Decision Threshold",
+                y = "Value"
+            ) +
+            scale_color_manual(
+                name = "Metric",
+                values = c("Precision" = "blue", "Recall" = "red")
+            ) +
+            scale_x_continuous(limits = c(0, 1)) +
+            scale_y_continuous(limits = c(0, 1)) +
+            custom_theme
+```

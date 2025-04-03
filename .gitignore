@@ -2,3 +2,4 @@ data
 document
 .DS_Store
 /.quarto/
+analyses

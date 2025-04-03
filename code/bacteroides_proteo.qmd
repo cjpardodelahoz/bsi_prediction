@@ -1,0 +1,46 @@
+---
+title: "Exploring *Bacteroides*-Proteobacteria association"
+format:
+  html:
+    code-fold: true
+    code-summary: "Show the code"
+---
+
+### Abundance dynamics of *Bacteroides* and pathogenic Proteobacteria
+
+We are going to visualize the change in relative abundance of *Bacteroides* and pathogenic Proteobacteria over time in the allo-HCT patient dataset. We want to determine if the dynamics are different in patients that suffered infections by the Proteobacteria compared to patients who did not get infected. For pathogens, we already expect their abundance increases and we are mostly replicating some of the results of Liao et al, 2021.
+
+```{r}
+# Load required libraries
+library(tidyverse)
+
+# Load stool sample metadata
+tblASVsamples <- read_csv(
+  "data/tblASVsamples.csv",
+  col_types = cols(
+    .default = col_guess(),  # Automatically guess other columns
+    Pool = col_character()  # Force Pool column to be character
+  )
+)
+
+# Load and transform the genus counts
+tblcounts_genus_wide <- read_csv("data/tblcounts_genus_wide.csv") %>%
+    pivot_longer(
+        cols = -1,
+        names_to = "Sample",
+        values_to = "Count"
+    ) %>%
+    pivot_wider(names_from = "Genus", values_from = "Count") %>%
+    mutate(count_sum = rowSums(across(2:ncol(.)))) %>%
+    mutate(across(2:ncol(.), ~ .x / count_sum, .names = "{col}"))
+
+# Join counts with stool sample metadata
+tblcounts_genus_meta <- tblcounts_genus_wide %>%
+    inner_join(tblASVsamples, by )
+
+# Load clinical metadata
+load("analyses/processed_data/tblpatientday_clinical.RData")
+
+# Join genus counts with sample and clinical metadata
+genus < -
+```

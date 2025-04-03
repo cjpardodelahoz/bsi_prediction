@@ -156,6 +156,14 @@ tblpatientday_clinical <- tblpatientday %>%
         ends_with("_infection"))
 
 as_tibble(tblpatientday_clinical)
+
+# Create the directory if it doesn't exist
+if (!dir.exists("analyses/processed_data")) {
+    dir.create("analyses/processed_data", recursive = TRUE)
+}
+
+# Save the tblpatientday_clinical object as an .RData file
+save(tblpatientday_clinical, file = "analyses/processed_data/tblpatientday_clinical.RData")
 ```
 
 Notice that some varialbles are not available for every day. We have to either delete those entries completely or extrapolate their value from the closest previous measurement before modeling. 

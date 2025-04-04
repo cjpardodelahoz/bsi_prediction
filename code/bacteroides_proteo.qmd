@@ -11,19 +11,32 @@ format:
 We are going to visualize the change in relative abundance of *Bacteroides* and pathogenic Proteobacteria over time in the allo-HCT patient dataset. We want to determine if the dynamics are different in patients that suffered infections by the Proteobacteria compared to patients who did not get infected. For pathogens, we already expect their abundance increases and we are mostly replicating some of the results of Liao et al, 2021.
 
 ```{r}
-# Load required libraries
+# Load required libraries and functions
 library(tidyverse)
+source("code/rfunctions/data_helpers.r")
+
+# Transplant metadata
+tblhctmeta <- read_csv("data/tblhctmeta.csv")
 
 # Load stool sample metadata
-tblASVsamples <- read_csv(
-  "data/tblASVsamples.csv",
+tblASVsamples <- read_csv("data/tblASVsamples.csv",
   col_types = cols(
     .default = col_guess(),  # Automatically guess other columns
-    Pool = col_character()  # Force Pool column to be character
-  )
-)
+    Pool = col_character())) %>%  # Force Pool column to be character
+  filter(PatientID %in% unique(tblhctmeta$PatientID)) %>%
+  select(SampleID, PatientID, Consistency, Timepoint) %>%
+  rowwise() %>%
+  mutate(DayRelativeToNearestHCT = calculate_day_relative_to_nearest_hct(PatientID, Timepoint, tblhctmeta)) %>%
+  ungroup() %>%
+  distinct(SampleID, .keep_all = TRUE)
 
-# Load and transform the genus counts
+# Load clinical metadata and score patients who developed infections
+load("analyses/processed_data/tblpatientday_clinical.RData")
+patient_infection_status <- tblpatientday_clinical %>%
+  group_by(PatientID) %>%
+  summarise(across(ends_with("_infection"), ~ any(.x == 1), .names = "{col}"))
+
+# Load and transforSampleID the genus counts TO-DO: What are the "gut metagenome", "metagenome", and "mouse metagenome"
 tblcounts_genus_wide <- read_csv("data/tblcounts_genus_wide.csv") %>%
     pivot_longer(
         cols = -1,
@@ -32,15 +45,43 @@ tblcounts_genus_wide <- read_csv("data/tblcounts_genus_wide.csv") %>%
     ) %>%
     pivot_wider(names_from = "Genus", values_from = "Count") %>%
     mutate(count_sum = rowSums(across(2:ncol(.)))) %>%
-    mutate(across(2:ncol(.), ~ .x / count_sum, .names = "{col}"))
+    mutate(across(2:(ncol(.)-1), ~ .x / count_sum, .names = "{col}"))
 
 # Join counts with stool sample metadata
 tblcounts_genus_meta <- tblcounts_genus_wide %>%
-    inner_join(tblASVsamples, by )
+    left_join(tblASVsamples, by = c("Sample" = "SampleID")) %>%
+    filter(!is.na(PatientID)) %>%
+    left_join(patient_infection_status, by = "PatientID")
+    
+    # Plot the average relative abundance of Escherichia over time, grouped by infection status
+    tblcounts_genus_meta %>%
+      filter(!is.na(DayRelativeToNearestHCT), DayRelativeToNearestHCT >= -10, DayRelativeToNearestHCT <= 30) %>%
+      group_by(DayRelativeToNearestHCT, Escherichia_infection) %>%
+      summarise(avg_abundance = mean(`Escherichia-Shigella`, na.rm = TRUE), .groups = "drop") %>%
+      ggplot(aes(x = DayRelativeToNearestHCT, y = avg_abundance, color = Escherichia_infection)) +
+      geom_line(size = 1) +
+      labs(
+      title = "Average Relative Abundance of Escherichia Over Time",
+      x = "Days Relative to Nearest HCT",
+      y = "Average Relative Abundance of Escherichia",
+      color = "Escherichia Infection"
+      ) +
+      theme_minimal() +
+      scale_y_continuous(limits = c(0, 1))
 
-# Load clinical metadata
-load("analyses/processed_data/tblpatientday_clinical.RData")
-
-# Join genus counts with sample and clinical metadata
-genus < -
+      # Plot the average relative abundance of Bacteroides over time, grouped by infection status
+      tblcounts_genus_meta %>%
+        filter(!is.na(DayRelativeToNearestHCT), DayRelativeToNearestHCT >= -15, DayRelativeToNearestHCT <= 30) %>%
+        group_by(DayRelativeToNearestHCT, Escherichia_infection) %>%
+        summarise(avg_abundance = mean(Bacteroides, na.rm = TRUE), .groups = "drop") %>%
+        ggplot(aes(x = DayRelativeToNearestHCT, y = avg_abundance, color = Escherichia_infection)) +
+        geom_line(size = 1) +
+        labs(
+          title = "Average Relative Abundance of Bacteroides Over Time",
+          x = "Days Relative to Nearest HCT",
+          y = "Average Relative Abundance of Bacteroides",
+          color = "Bacteroides Infection"
+        ) +
+        theme_minimal() +
+        scale_y_continuous(limits = c(0, 1))
 ```

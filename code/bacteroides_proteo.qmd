@@ -6,29 +6,31 @@ format:
     code-summary: "Show the code"
 ---
 
-### Abundance dynamics of *Bacteroides* and pathogenic Proteobacteria
+### Relative abundance dynamics of *Bacteroides* and pathogenic Proteobacteria
 
 We are going to visualize the change in relative abundance of *Bacteroides* and pathogenic Proteobacteria over time in the allo-HCT patient dataset. We want to determine if the dynamics are different in patients that suffered infections by the Proteobacteria compared to patients who did not get infected. For pathogens, we already expect their abundance increases and we are mostly replicating some of the results of Liao et al, 2021.
 
 ```{r}
 # Load required libraries and functions
-library(tidyverse)
+suppressMessages(library(tidyverse))
 source("code/rfunctions/data_helpers.r")
 
 # Transplant metadata
-tblhctmeta <- read_csv("data/tblhctmeta.csv")
+tblhctmeta <- suppressMessages(read_csv("data/tblhctmeta.csv"))
 
 # Load stool sample metadata
-tblASVsamples <- read_csv("data/tblASVsamples.csv",
-  col_types = cols(
-    .default = col_guess(),  # Automatically guess other columns
-    Pool = col_character())) %>%  # Force Pool column to be character
-  filter(PatientID %in% unique(tblhctmeta$PatientID)) %>%
-  select(SampleID, PatientID, Consistency, Timepoint) %>%
-  rowwise() %>%
-  mutate(DayRelativeToNearestHCT = calculate_day_relative_to_nearest_hct(PatientID, Timepoint, tblhctmeta)) %>%
-  ungroup() %>%
-  distinct(SampleID, .keep_all = TRUE)
+tblASVsamples <- suppressMessages(
+  read_csv("data/tblASVsamples.csv",
+    col_types = cols(
+      .default = col_guess(),  # Automatically guess other columns
+      Pool = col_character())) %>%  # Force Pool column to be character
+    filter(PatientID %in% unique(tblhctmeta$PatientID)) %>%
+    select(SampleID, PatientID, Consistency, Timepoint) %>%
+    rowwise() %>%
+    mutate(DayRelativeToNearestHCT = calculate_day_relative_to_nearest_hct(PatientID, Timepoint, tblhctmeta)) %>%
+    ungroup() %>%
+    distinct(SampleID, .keep_all = TRUE)
+)
 
 # Load clinical metadata and score patients who developed infections
 load("analyses/processed_data/tblpatientday_clinical.RData")
@@ -36,52 +38,154 @@ patient_infection_status <- tblpatientday_clinical %>%
   group_by(PatientID) %>%
   summarise(across(ends_with("_infection"), ~ any(.x == 1), .names = "{col}"))
 
-# Load and transforSampleID the genus counts TO-DO: What are the "gut metagenome", "metagenome", and "mouse metagenome"
-tblcounts_genus_wide <- read_csv("data/tblcounts_genus_wide.csv") %>%
+# Load and transform the genus counts
+tblrel_genus_wide <- suppressMessages(
+  read_csv("data/tblcounts_genus_wide.csv") %>%
     pivot_longer(
-        cols = -1,
-        names_to = "Sample",
-        values_to = "Count"
+      cols = -1,
+      names_to = "Sample",
+      values_to = "Count"
     ) %>%
     pivot_wider(names_from = "Genus", values_from = "Count") %>%
+    select(-c("gut metagenome", "metagenome", "mouse gut metagenome", "<not present>")) %>%
     mutate(count_sum = rowSums(across(2:ncol(.)))) %>%
     mutate(across(2:(ncol(.)-1), ~ .x / count_sum, .names = "{col}"))
+)
 
 # Join counts with stool sample metadata
-tblcounts_genus_meta <- tblcounts_genus_wide %>%
+tblrel_genus_meta <- tblrel_genus_wide %>%
     left_join(tblASVsamples, by = c("Sample" = "SampleID")) %>%
     filter(!is.na(PatientID)) %>%
-    left_join(patient_infection_status, by = "PatientID")
+    left_join(patient_infection_status, by = "PatientID") %>%
+    mutate(across(ends_with("_infection"), ~ replace_na(.x, FALSE)))
     
-    # Plot the average relative abundance of Escherichia over time, grouped by infection status
-    tblcounts_genus_meta %>%
-      filter(!is.na(DayRelativeToNearestHCT), DayRelativeToNearestHCT >= -10, DayRelativeToNearestHCT <= 30) %>%
-      group_by(DayRelativeToNearestHCT, Escherichia_infection) %>%
-      summarise(avg_abundance = mean(`Escherichia-Shigella`, na.rm = TRUE), .groups = "drop") %>%
-      ggplot(aes(x = DayRelativeToNearestHCT, y = avg_abundance, color = Escherichia_infection)) +
-      geom_line(size = 1) +
-      labs(
-      title = "Average Relative Abundance of Escherichia Over Time",
-      x = "Days Relative to Nearest HCT",
-      y = "Average Relative Abundance of Escherichia",
-      color = "Escherichia Infection"
+# Plot the average relative abundance of Escherichia over time, grouped by infection status
+tblrel_genus_meta %>%
+  filter(!is.na(DayRelativeToNearestHCT), DayRelativeToNearestHCT >= -10, DayRelativeToNearestHCT <= 30) %>%
+  group_by(DayRelativeToNearestHCT, Escherichia_infection) %>%
+  summarise(avg_abundance = mean(`Escherichia-Shigella`, na.rm = TRUE), .groups = "drop") %>%
+  ggplot(aes(x = DayRelativeToNearestHCT, y = avg_abundance, color = Escherichia_infection)) +
+  geom_line(linewidth = 1) +
+  scale_color_manual(values = c(`TRUE` = "#EE2C2C", `FALSE` = "gray60")) +
+  labs(
+  title = "Average relative abundance of escherichia over time",
+   x = "Days Relative to Nearest HCT",
+   y = "Average Relative Abundance of Escherichia",
+   color = "Escherichia infection"
+  ) +
+  custom_theme +
+  scale_y_continuous(limits = c(0, 1))    
+    
+# Plot the average relative abundance of Bacteroides over time, grouped by infection status
+tblrel_genus_meta %>%
+  filter(!is.na(DayRelativeToNearestHCT), DayRelativeToNearestHCT >= -15, DayRelativeToNearestHCT <= 30) %>%
+  group_by(DayRelativeToNearestHCT, Escherichia_infection) %>%
+  summarise(avg_abundance = mean(Bacteroides, na.rm = TRUE), .groups = "drop") %>%
+  ggplot(aes(x = DayRelativeToNearestHCT, y = avg_abundance, color = Escherichia_infection)) +
+  geom_line(linewidth = 1) +
+  scale_color_manual(values = c(`TRUE` = "#EE2C2C", `FALSE` = "gray60")) +
+  labs(
+   title = "Average Relative Abundance of Bacteroides",
+   x = "Days Relative to Nearest HCT",
+   y = "Average relative abundance of Bacteroides over time",
+   color = "Escherichia infection"
       ) +
-      theme_minimal() +
-      scale_y_continuous(limits = c(0, 1))
+  custom_theme +
+  scale_y_continuous(limits = c(0, 1))
 
-      # Plot the average relative abundance of Bacteroides over time, grouped by infection status
-      tblcounts_genus_meta %>%
-        filter(!is.na(DayRelativeToNearestHCT), DayRelativeToNearestHCT >= -15, DayRelativeToNearestHCT <= 30) %>%
-        group_by(DayRelativeToNearestHCT, Escherichia_infection) %>%
-        summarise(avg_abundance = mean(Bacteroides, na.rm = TRUE), .groups = "drop") %>%
-        ggplot(aes(x = DayRelativeToNearestHCT, y = avg_abundance, color = Escherichia_infection)) +
-        geom_line(size = 1) +
-        labs(
-          title = "Average Relative Abundance of Bacteroides Over Time",
-          x = "Days Relative to Nearest HCT",
-          y = "Average Relative Abundance of Bacteroides",
-          color = "Bacteroides Infection"
-        ) +
-        theme_minimal() +
-        scale_y_continuous(limits = c(0, 1))
+# Plot the average relative abundance of Klebsiella over time, grouped by infection status
+tblrel_genus_meta %>%
+  filter(!is.na(DayRelativeToNearestHCT), DayRelativeToNearestHCT >= -15, DayRelativeToNearestHCT <= 30) %>%
+   group_by(DayRelativeToNearestHCT, Klebsiella_infection) %>%
+   summarise(avg_abundance = mean(Klebsiella, na.rm = TRUE), .groups = "drop") %>%
+   ggplot(aes(x = DayRelativeToNearestHCT, y = avg_abundance, color = Klebsiella_infection)) +
+   geom_line(linewidth = 1) +
+   scale_color_manual(values = c(`TRUE` = "#EE2C2C", `FALSE` = "gray60")) +
+   labs(
+    title = "Average Relative Abundance of Klebsiella Over Time",
+    x = "Days Relative to Nearest HCT",
+    y = "Average relative abundance of Klebsiella over time",
+      color = "Klebsiella infection"
+      ) +
+  custom_theme +
+  scale_y_continuous(limits = c(0, 1))
+
+# Plot the average relative abundance of Bacteroides over time, grouped by infection status
+tblrel_genus_meta %>%
+  filter(!is.na(DayRelativeToNearestHCT), DayRelativeToNearestHCT >= -15, DayRelativeToNearestHCT <= 30) %>%
+  group_by(DayRelativeToNearestHCT, Klebsiella_infection) %>%
+  summarise(avg_abundance = mean(Bacteroides, na.rm = TRUE), .groups = "drop") %>%
+  ggplot(aes(x = DayRelativeToNearestHCT, y = avg_abundance, color = Klebsiella_infection)) +
+  geom_line(linewidth = 1) +
+  scale_color_manual(values = c(`TRUE` = "#EE2C2C", `FALSE` = "gray60")) +
+  labs(
+   title = "Average Relative Abundance of Bacteroides Over Time",
+   x = "Days Relative to Nearest HCT",
+   y = "Average relative abundance of Bacteroides over time",
+    color = "Klebsiella infection"
+      ) +
+  custom_theme +
+  scale_y_continuous(limits = c(0, 1))
+```
+
+There is no clear evidence that the relative abundance of *Bacteroides* is following a similar dynamic to that of *Escherichia*, or even that there is a higher relative abundance of Baceroides in patients who became infected with Escherichia. 
+
+Interestingly, there is not an increase in the relative abundance of *Klebsiella* in patients that eventually developed a *Klebsiella* infection. This is a bit counter-intuitive and I need to examine the time series for those patients more closely.
+
+### Absolute abundance dynamics of *Bacteroides* and pathogenic Proteobacteria
+
+It is possible that the link between the dynamics of *Bacteroides* and pathogenic proteobacteria is not evident when looking at relative abundance due to non-independence. So, we are going to now look at the dynamics in the subset of the samples for which we have qPCR data for 16S, which allows us to convert to absolute abundances.
+
+```{r}
+# Load the qpcr data
+tblqpcr <- suppressMessages(read_csv("data/tblqpcr.csv"))
+
+# Get table with genus absolute abundance
+tblabs_genus_meta <- tblrel_genus_meta %>%
+  filter(Sample %in% unique(tblqpcr$SampleID)) %>%
+  left_join(tblqpcr, by = c("Sample" = "SampleID")) %>%
+  mutate(across(2:413, ~ .x * qPCR16S))
+
+# Plot the log of absolute abundance of Escherichia over time, grouped by infection status
+tblabs_genus_meta %>%
+  filter(!is.na(DayRelativeToNearestHCT), DayRelativeToNearestHCT >= -10, DayRelativeToNearestHCT <= 30) %>%
+  group_by(DayRelativeToNearestHCT, Escherichia_infection) %>%
+  summarise(avg_abs_abundance = mean(`Escherichia-Shigella`, na.rm = TRUE), .groups = "drop") %>%
+  mutate(log_avg_abs_abundance = log10(avg_abs_abundance)) %>%
+  ggplot(aes(x = DayRelativeToNearestHCT, y = log_avg_abs_abundance, color = Escherichia_infection)) +
+  geom_line(linewidth = 1) +
+  scale_color_manual(values = c(`TRUE` = "#EE2C2C", `FALSE` = "gray60")) +
+  labs(
+    title = "Log of Average Absolute Abundance of Escherichia Over Time",
+    x = "Days Relative to Nearest HCT",
+    y = "Log Average Absolute Abundance of Escherichia",
+    color = "Escherichia infection"
+    ) +
+  custom_theme
+
+# Plot the log of absolute abundance of Bacteroides over time, grouped by Escherichia infection status
+tblabs_genus_meta %>%
+  filter(!is.na(DayRelativeToNearestHCT), DayRelativeToNearestHCT >= -10, DayRelativeToNearestHCT <= 30) %>%
+  group_by(DayRelativeToNearestHCT, Escherichia_infection) %>%
+  summarise(avg_abs_abundance = mean(Bacteroides, na.rm = TRUE), .groups = "drop") %>%
+  mutate(log_avg_abs_abundance = log10(avg_abs_abundance)) %>%
+  ggplot(aes(x = DayRelativeToNearestHCT, y = log_avg_abs_abundance, color = Escherichia_infection)) +
+  geom_line(linewidth = 1) +
+  scale_color_manual(values = c(`TRUE` = "#EE2C2C", `FALSE` = "gray60")) +
+  labs(
+    title = "Log of Average Absolute Abundance of Bacteroides Over Time",
+    x = "Days Relative to Nearest HCT",
+    y = "Log Average Absolute Abundance of Bacteroides",
+    color = "Escherichia infection"
+    ) +
+  custom_theme
+```
+
+Absolute abundance is not as useful to examine the dynamics because there is a lot of missing data for infected patients. This is way the red lines drop to 0 in the plots. In any case, there is no indication that the dynamic patter is different from the relative abundance based on this data.
+
+### Patient-specific time series
+
+
+```{r}
+
 ```

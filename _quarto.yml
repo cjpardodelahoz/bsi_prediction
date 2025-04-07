@@ -15,6 +15,9 @@ website:
       - section: "Data exploration"
         contents:
           - code/explore.qmd
+      - section: "Bacteroides facilitation" 
+        contents:
+          - code/bacteroides_proteo.qmd
       - section: "BSI logistic regression models" 
         contents:
           - code/clinical_model.qmd

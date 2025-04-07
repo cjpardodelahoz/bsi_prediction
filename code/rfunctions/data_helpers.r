@@ -59,7 +59,6 @@ prep_taxa_counts <- function(taxlevel) {
                 values_to = "Count"
             ) %>%
             pivot_wider(names_from = all_of(taxlevel_filter), values_from = "Count") %>%
-            select(-c("gut metagenome", "metagenome", "mouse gut metagenome", "<not present>")) %>%
             mutate(count_sum = rowSums(across(2:ncol(.)))) %>%
             mutate(across(2:(ncol(.)-1), ~ .x / count_sum, .names = "{col}_abund")) %>%
             select(Sample, ends_with("_abund"))

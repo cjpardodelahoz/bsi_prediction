@@ -13,8 +13,9 @@ format:
 We first need to assemble a table with all metadata available for each patient. I will focus on patients that had a single transplant.
 
 ```{r}
-# Load required library
+# Load required libraries and functions
 suppressMessages(library(tidyverse))
+source("code/rfunctions/data_helpers.r")
 
 # Load all tables that contain patient metadata
 tblhctmeta <- suppressMessages(read_csv("data/tblhctmeta.csv"))
@@ -57,15 +58,6 @@ head(tblpatientday)
 Let's add the clinical metadata to to the patient-day table:
 
 ```{r}
-# Function to calculate DayRelativeToNearestHCT for infections data
-calculate_day_relative_to_nearest_hct <- function(patient_id, event_day, hct_meta) {
-    patient_hcts <- hct_meta %>%
-        filter(PatientID == patient_id) %>%
-        pull(TimepointOfTransplant)
-    nearest_hct <- patient_hcts[which.min(abs(event_day - patient_hcts))]
-    event_day - nearest_hct
-}
-
 # List of drugs to include
 antibiotics <- c("glycopeptide antibiotics", "quinolones", "penicillins", "sulfonamides", "cephalosporins", "carbapenems")
 

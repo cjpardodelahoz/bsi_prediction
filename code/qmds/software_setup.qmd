@@ -31,6 +31,8 @@ conda create -n r-4.4.2 -c conda-forge  -c bioconda -c defaults \
     r-biocmanager \
     r-languageserver
 
+# TO-DO: SRA TOOLKITS CONDA ENV
+
 # Export YMLs
 conda env export --name r-4.4.2 --from-history | sed "s|^prefix.*||" > software/conda/r-4.4.2.yml # I added the version numbers manually
 ```

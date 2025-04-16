@@ -11,16 +11,17 @@ website:
     contents:
       - section: "Introduction"
         contents:
-          - code/software_setup.qmd
+          - code/qmds/software_setup.qmd
       - section: "Data exploration"
         contents:
-          - code/explore.qmd
+          - code/qmds/explore.qmd
       - section: "Bacteroides facilitation" 
         contents:
-          - code/bacteroides_proteo.qmd
+          - code/qmds/bacteroides_proteo.qmd
+          - code/qmds/bacteroides_variation.qmd
       - section: "BSI logistic regression models" 
         contents:
-          - code/clinical_model.qmd
+          - code/qmds/clinical_model.qmd
 format:
   html:
     theme:

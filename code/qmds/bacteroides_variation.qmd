@@ -1,0 +1,47 @@
+---
+title: "Exploring *Bacteroides* molecular variation"
+engine: knitr
+format:
+  html:
+    code-fold: true
+    code-summary: "Show the code"
+---
+
+## Connecting *Bacteroides* 16S ASVs to genomic species-level variation
+
+### Assembling *Bacteroides* MAGs
+
+We started working with the metagenomic dataset that was published in the [Scientific Data paper by Yan et al 2022](https://www.nature.com/articles/s41597-022-01302-9). This includes a nested subset of 395 metagenomic libraries from the allo-HCT patient population that was profiled with 16S.
+
+We first need to get the list of SRA accessions:
+
+```{r}
+# Load required library
+suppressMessages(library(tidyverse))
+
+# Load table with stool sample metadata
+accessions <- suppressMessages(
+        read_csv("data/tblASVsamples.csv",
+            col_types = cols(
+                .default = col_guess(),
+                Pool = col_character())) %>%
+        filter(!is.na(AccessionShotgun)) %>%
+        select(AccessionShotgun, SampleID) %>%
+        mutate(SampleID = paste0("s_", SampleID)) %>% # to ensure all filenames start with a letter rather than a number
+        distinct())
+
+# Save accessions to misc file
+write_tsv(accessions, "misc_files/bacteroides_variation/yan_sd_2022_accessions.txt", col_names = FALSE)
+```
+
+Now we can dowdload the reads from SRA, sort them, and rename them with the sample names:
+```{bash, eval=FALSE}
+# Make directory for raw reads
+mkdir -p data/reads/yan_sd_2022
+
+# Fetch, sort and rename reads
+sbatch code/scripts/bacteroides_variation/fetch_yan_reads.sh
+
+# Clear SRA cache
+rm -r /data1/xavierj/carlos/sra_repo/sra/*
+```

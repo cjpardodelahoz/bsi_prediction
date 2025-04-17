@@ -6,6 +6,8 @@
 #SBATCH --error=log/bacteroides_variation/fetch_yan_reads_%A_%a.err
 #SBATCH --output=log/bacteroides_variation/fetch_yan_reads_%A_%a.err
 #SBATCH --partition=cpu
+#SBATCH --time=06:00:00
+
 
 # Set path for SRA toolkits
 export PATH=/usersoftware/xavierj/sratoolkit.3.2.0-centos_linux64/bin:$PATH
@@ -20,7 +22,7 @@ prefetch ${sra_accession}
 fasterq-dump -O data/reads/yan_sd_2022 ${sra_accession}
 
 # Rename and sort reads
-mkdir -p data/reads/yan_sd_2022/${sample_name}
+mkdir -p data/reads/yan_sd_2022/${sampqle_name}
 mv data/reads/yan_sd_2022/${sra_accession}_1.fastq data/reads/yan_sd_2022/${sample_name}/${sample_name}_R1_all.fastq
 mv data/reads/yan_sd_2022/${sra_accession}_2.fastq data/reads/yan_sd_2022/${sample_name}/${sample_name}_R2_all.fastq
 # Gzip the files

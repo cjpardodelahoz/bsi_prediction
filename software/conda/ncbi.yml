@@ -1,0 +1,12 @@
+name: ncbi
+channels:
+  - conda-forge
+  - bioconda
+  - tensorflow
+  - plotly
+  - deepchem
+  - pytorch
+  - nvidia
+dependencies:
+  - ncbi-datasets-cli=18.0.1
+

@@ -15,13 +15,16 @@ website:
       - section: "Data exploration"
         contents:
           - code/qmds/explore.qmd
+      - section: "BSI logistic regression models" 
+        contents:
+          - code/qmds/clinical_model.qmd
       - section: "Bacteroides facilitation" 
         contents:
           - code/qmds/bacteroides_proteo.qmd
           - code/qmds/bacteroides_variation.qmd
-      - section: "BSI logistic regression models" 
+      - section: "Gut depletion precedes BSIs?"
         contents:
-          - code/qmds/clinical_model.qmd
+          - code/qmds/depletion_bsi_risk.qmd
 format:
   html:
     theme:

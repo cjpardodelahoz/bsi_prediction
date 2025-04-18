@@ -11,6 +11,8 @@ format:
 
 ### Assembling *Bacteroides* MAGs
 
+#### Retrieving Yan et al 2022 metagenomic reads
+
 We started working with the metagenomic dataset that was published in the [Scientific Data paper by Yan et al 2022](https://www.nature.com/articles/s41597-022-01302-9). This includes a nested subset of 395 metagenomic libraries from the allo-HCT patient population that was profiled with 16S.
 
 We first need to get the list of SRA accessions:
@@ -45,3 +47,27 @@ sbatch code/scripts/bacteroides_variation/fetch_yan_reads.sh
 # Clear SRA cache
 rm -r /data1/xavierj/carlos/sra_repo/sra/*
 ```
+
+#### Enriching Kraken database with Baceroides genomes from NCBI
+
+I downloaded all genomes of *Bacteroides* from the NCBI database on April 18th, 2025, and extracted the metadata to a CSV:
+
+```{bash, eval=FALSE}
+# NCBI CLI toolkit
+conda activate ncbi
+
+# Output directory
+bacteroides_genome_dir="analyses/bacteroides_variation/genomes/ncbi"
+mkdir -p ${bacteroides_genome_dir}
+
+# Download all Bacteroides genomes
+datasets download genome taxon "Bacteroides" --reference --dehydrated --filename ${bacteroides_genome_dir}/bacteroides_genomes.zip
+
+# Extract and rehydrate the files
+unzip ${bacteroides_genome_dir}/bacteroides_genomes.zip -d ${bacteroides_genome_dir}
+datasets rehydrate --directory ${bacteroides_genome_dir}
+
+# Tabulate genome metadata
+python software/ncbi_jsonl_to_csv.py analyses/bacteroides_variation/genomes/ncbi/ncbi_dataset/data/assembly_data_report.jsonl analyses/bacteroides_variation/genomes/ncbi/ncbi_dataset/genome_metadata.csv
+```
+

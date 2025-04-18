@@ -43,6 +43,7 @@ Install the conda environments from the YMLs:
 # Create conda environments from YML file
 conda env create -f software/conda/r-4.4.2.yml
 conda env create -f software/conda/kraken2.yml
+conda env create -f software/conda/ncbi.yml
 ```
 
 Download the required DBs:

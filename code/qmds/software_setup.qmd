@@ -42,6 +42,14 @@ Install the conda environments from the YMLs:
 ```{bash, eval=FALSE}
 # Create conda environments from YML file
 conda env create -f software/conda/r-4.4.2.yml
+conda env create -f software/conda/kraken2.yml
+```
+
+Download the required DBs:
+
+```{bash, eval=FALSE}
+# Kraken databases
+sbatch software/build_kraken_db.sh
 ```
 
 I will store data and document files in the Xavier hard drive directly and create symlinks within each machine:

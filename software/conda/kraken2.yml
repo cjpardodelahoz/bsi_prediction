@@ -1,0 +1,14 @@
+name: kraken2
+channels:
+  - conda-forge
+  - bioconda
+  - tensorflow
+  - plotly
+  - deepchem
+  - pytorch
+  - nvidia
+dependencies:
+  - kraken2=2.14
+  - krakentools=1.2
+  - bracken=3.1
+

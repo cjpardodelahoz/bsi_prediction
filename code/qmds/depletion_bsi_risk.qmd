@@ -76,7 +76,7 @@ tblrel_genus_meta %>%
 
 These observations led me to hypothesize that drastic reductions in the overall abundance of microbes in the gut (signaled by the increase of *Streptoccus* realtive abundance) may be a risk factor infections by *Klebsiella* when they happen early during the prophylaxis.
 
-This is the proportion of stool samples with >10% *Streptococcus* relative abundance over time relatibe to the transplant:
+This is the proportion of stool samples with >10% *Streptococcus* relative abundance over time relative to the transplant:
 
 ```{r}
 # Calculate the proportion of samples with Streptococcus domination for each day
@@ -102,6 +102,8 @@ ggplot(streptococcus_domination_proportion, aes(x = DayRelativeToNearestHCT, y =
 
 ### Cox proportional hazard analysis
 
+To test this hypothesis, I setup a cox proportional hazard analysis to model the risk of bloodstream infections by *Klebsiella* in patients who experience a domination of *Streptococcus* (i.e., *Streptococcus* relative abundance > 10%; proxy for gut depletion) early-on during the transplant period. I used domination as a time-dependent covariate which starts at value 0 and changes to 1 if the domination is observed **during a specific window** of days relative to the transplant. For example, this is how the table is scored if the window for domiantion is between days -1 and 1 for a patient that had a domiantion at day 0 and a positive blood culture of *Klebsiella* at day +2: 
+
 ```{r}
 load("analyses/processed_data/tblpatientday_clinical.RData")
 
@@ -110,12 +112,12 @@ library(survival)
 
 # Step 1: Identify the first domination day within the -10 to +10 window for each patient
 streptococcus_domination <- tblrel_genus_meta %>%
-  filter(Streptococcus_abund > 0.15) %>%  # Filter for domination
+  filter(Streptococcus_abund > 0.1) %>%  # Filter for domination
   group_by(PatientID) %>%
   summarise(
     DominationDay = ifelse(
       any(DayRelativeToNearestHCT >= -1 & DayRelativeToNearestHCT <= 1),
-      min(DayRelativeToNearestHCT[DayRelativeToNearestHCT >= -10 & DayRelativeToNearestHCT <= 10], na.rm = TRUE),
+      min(DayRelativeToNearestHCT[DayRelativeToNearestHCT >= -1 & DayRelativeToNearestHCT <= 1], na.rm = TRUE),
       NA_real_  # Set to NA if no valid domination day exists
     ),
     .groups = "drop"
@@ -159,12 +161,13 @@ cox_data <- tblpatientday_clinical %>%
   ungroup()
 
 # Define the observation window
-observation_window <- seq(-10, 50)
+observation_min <- -10
+observation_max <- 50
 
 # Expand the data to include one row per day for each patient
 expanded_data <- tblpatientday_clinical %>%
-  mutate(DayRelativeToNearestHCT = as.numeric(DayRelativeToNearestHCT)) %>%  # Ensure numeric
-  complete(PatientID, DayRelativeToNearestHCT = observation_window) %>%  # Fill in missing days
+  mutate(DayRelativeToNearestHCT = as.numeric(as.character(DayRelativeToNearestHCT))) %>%  # Ensure numeric
+  filter(between(DayRelativeToNearestHCT, observation_min, observation_max)) %>%
   left_join(streptococcus_domination, by = "PatientID") %>%  # Add DominationDay
   group_by(PatientID) %>%
   mutate(
@@ -186,12 +189,21 @@ cox_data_time_dependent <- expanded_data %>%
   arrange(PatientID, DayRelativeToNearestHCT) %>%  # Ensure data is ordered by PatientID and time
   group_by(PatientID) %>%
   mutate(
-    start_time = lag(DayRelativeToNearestHCT, default = min(observation_window)),  # Start of the interval
+    start_time = lag(DayRelativeToNearestHCT, default = observation_min),  # Start of the interval
     stop_time = DayRelativeToNearestHCT  # End of the interval
   ) %>%
   ungroup() %>%
   filter(!is.na(start_time) & !is.na(stop_time) & stop_time > start_time)  # Remove invalid intervals
 
+cox_data_time_dependent %>% 
+  filter(PatientID == "1468") %>%
+  select(PatientID, start_time, stop_time, Streptococcus_domination_status, Event) %>%
+  print(n = 60)
+```
+
+The magnitude of the coefficient and the statistical significance of the differential risk with this covariate increase as the window that I used to score the domination shrinks towards day 0, which is consistent with the peak of *Streptococcus* relative abundance at day 0 in patients who got a *Klebsiella* infection. For example, patients who had *Streptococcus* domination between days -1 and +1 had a ~3-fold higher risk of infection:
+
+```{r}
 # Fit the Cox model with the time-dependent covariate
 cox_model_time_dependent <- coxph(
   Surv(start_time, stop_time, Event) ~ Streptococcus_domination_status,
@@ -201,6 +213,8 @@ cox_model_time_dependent <- coxph(
 # View the summary of the model
 summary(cox_model_time_dependent)
 ```
+
+For comparison, patients who had *Streptococcus* domination between days -1 and +1 were not at a significantly different risk of *Escherichia* infections: 
 
 ```{r}
 # Step 2: Merge domination data with clinical data
@@ -241,12 +255,13 @@ cox_data <- tblpatientday_clinical %>%
   ungroup()
 
 # Define the observation window
-observation_window <- seq(-10, 50)
+observation_min <- -10
+observation_max <- 50
 
 # Expand the data to include one row per day for each patient
 expanded_data <- tblpatientday_clinical %>%
-  mutate(DayRelativeToNearestHCT = as.numeric(DayRelativeToNearestHCT)) %>%  # Ensure numeric
-  complete(PatientID, DayRelativeToNearestHCT = observation_window) %>%  # Fill in missing days
+  mutate(DayRelativeToNearestHCT = as.numeric(as.character(DayRelativeToNearestHCT))) %>%  # Ensure numeric
+  filter(between(DayRelativeToNearestHCT, observation_min, observation_max)) %>%
   left_join(streptococcus_domination, by = "PatientID") %>%  # Add DominationDay
   group_by(PatientID) %>%
   mutate(
@@ -268,7 +283,7 @@ cox_data_time_dependent <- expanded_data %>%
   arrange(PatientID, DayRelativeToNearestHCT) %>%  # Ensure data is ordered by PatientID and time
   group_by(PatientID) %>%
   mutate(
-    start_time = lag(DayRelativeToNearestHCT, default = min(observation_window)),  # Start of the interval
+    start_time = lag(DayRelativeToNearestHCT, default = observation_min),  # Start of the interval
     stop_time = DayRelativeToNearestHCT  # End of the interval
   ) %>%
   ungroup() %>%
@@ -283,3 +298,5 @@ cox_model_time_dependent <- coxph(
 # View the summary of the model
 summary(cox_model_time_dependent)
 ```
+
+This is also consistent with the dynamics of *Streptococcus* relative abundance in patients who did and did not develop *Escherichia* infections (see above).

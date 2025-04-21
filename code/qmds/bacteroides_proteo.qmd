@@ -85,23 +85,6 @@ tblrel_genus_meta %>%
       ) +
   custom_theme +
   scale_y_continuous(limits = c(0, 1))
-
-# Plot the average relative abundance of Streptococcus over time, grouped by infection status
-tblrel_genus_meta %>%
-  filter(!is.na(DayRelativeToNearestHCT), DayRelativeToNearestHCT >= -15, DayRelativeToNearestHCT <= 30) %>%
-   group_by(DayRelativeToNearestHCT, Klebsiella_infection) %>%
-   summarise(avg_abundance = mean(Streptococcus_abund, na.rm = TRUE), .groups = "drop") %>%
-   ggplot(aes(x = DayRelativeToNearestHCT, y = avg_abundance, color = Klebsiella_infection)) +
-   geom_line(linewidth = 1) +
-   scale_color_manual(values = c(`TRUE` = "#EE2C2C", `FALSE` = "gray60")) +
-   labs(
-    title = "Average Relative Abundance of Streptococcus Over Time",
-    x = "Days Relative to Nearest HCT",
-    y = "Average relative abundance of Streptococcus over time",
-      color = "Klebsiella infection"
-      ) +
-  custom_theme +
-  scale_y_continuous(limits = c(0, 1))
 ```
 
 There is no clear evidence that the relative abundance of *Bacteroides* is following a similar dynamic to that of *Escherichia*, or even that there is a higher relative abundance of Baceroides in patients who became infected with Escherichia. 

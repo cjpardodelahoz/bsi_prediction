@@ -44,6 +44,8 @@ Install the conda environments from the YMLs:
 conda env create -f software/conda/r-4.4.2.yml
 conda env create -f software/conda/kraken2.yml
 conda env create -f software/conda/ncbi.yml
+conda env create -f software/conda/spades.yml
+conda env create -f software/conda/fastp.yml
 ```
 
 Download the required DBs:

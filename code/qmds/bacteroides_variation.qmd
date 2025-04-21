@@ -17,7 +17,7 @@ We started working with the metagenomic dataset that was published in the [Scien
 
 We first need to get the list of SRA accessions:
 
-```{r}
+```{r, eval=FALSE}
 # Load required library
 suppressMessages(library(tidyverse))
 
@@ -53,6 +53,8 @@ rm -r /data1/xavierj/carlos/sra_repo/sra/*
 I downloaded all genomes of *Bacteroides* from the NCBI database on April 18th, 2025, and extracted the metadata to a CSV:
 
 ```{bash, eval=FALSE}
+# Download genomes from NCBI
+
 # NCBI CLI toolkit
 conda activate ncbi
 
@@ -61,13 +63,69 @@ bacteroides_genome_dir="analyses/bacteroides_variation/genomes/ncbi"
 mkdir -p ${bacteroides_genome_dir}
 
 # Download all Bacteroides genomes
-datasets download genome taxon "Bacteroides" --reference --dehydrated --filename ${bacteroides_genome_dir}/bacteroides_genomes.zip
+datasets download genome taxon "Bacteroides" --dehydrated --filename ${bacteroides_genome_dir}/bacteroides_genomes.zip
 
 # Extract and rehydrate the files
 unzip ${bacteroides_genome_dir}/bacteroides_genomes.zip -d ${bacteroides_genome_dir}
 datasets rehydrate --directory ${bacteroides_genome_dir}
 
+
+# Sort and relabel genome files
+
+# Create directory for all .fna files
+mkdir -p analyses/bacteroides_variation/genomes/ncbi/ncbi_dataset/fastas
+
+# Find and move all .fna files to the new directory
+find analyses/bacteroides_variation/genomes/ncbi/ncbi_dataset/data/ -not -path "analyses/bacteroides_variation/genomes/ncbi/ncbi_dataset/fastas/*" -type f -name "*.fna" -exec mv {} analyses/bacteroides_variation/genomes/ncbi/ncbi_dataset/fastas/ \;
+
+# Create directory for relabeled fastas
+mkdir -p analyses/bacteroides_variation/genomes/ncbi/ncbi_dataset/relabeled_fastas
+
+# Copy and rename files
+for file in analyses/bacteroides_variation/genomes/ncbi/ncbi_dataset/fastas/*; do
+  base=$(basename "$file")
+  new_name="${base%%.*}.fna"
+  mv "$file" "analyses/bacteroides_variation/genomes/ncbi/ncbi_dataset/relabeled_fastas/$new_name"
+done
+
+
+# Extract genome metadata to CSV
+
+# Python env
+conda activate python3
+
 # Tabulate genome metadata
-python software/ncbi_jsonl_to_csv.py analyses/bacteroides_variation/genomes/ncbi/ncbi_dataset/data/assembly_data_report.jsonl analyses/bacteroides_variation/genomes/ncbi/ncbi_dataset/genome_metadata.csv
+python software/custom/ncbi_jsonl_to_csv.py analyses/bacteroides_variation/genomes/ncbi/ncbi_dataset/data/assembly_data_report.jsonl analyses/bacteroides_variation/genomes/ncbi/ncbi_dataset/genome_metadata.csv
+
+# Switch to R env
+conda activate r-4.4.2
 ```
 
+This downloaded 15,412 genomes. I filtered them to include only the ones with checkM completeness > 90% and checkM contamination < 5%. This resulted in 7,136 genomes:
+
+```{r, eval=FALSE}
+# Load genome metadata file
+sampled_genomes <- read_csv("analyses/bacteroides_variation/genomes/ncbi/ncbi_dataset/genome_metadata.csv") %>%
+  filter(checkm_completeness >= 90 & checkm_contamination <= 5) %>% 
+  mutate(file = str_remove(accession, "\\..*$")) %>%
+  select(file, taxid)
+
+# Save CSV
+write_csv(sampled_genomes, "analyses/bacteroides_variation/genomes/ncbi/ncbi_dataset/sampled_genomes.csv", col_names = FALSE)
+```
+
+I had to add the NCBI Tax ID to the headers of the selected genomes before adding them to the kraken database:
+
+```{bash, eval=FALSE}
+sh software/custom/taxid_to_headers.sh \
+  -c analyses/bacteroides_variation/genomes/ncbi/ncbi_dataset/sampled_genomes.csv \
+  -d analyses/bacteroides_variation/genomes/ncbi/ncbi_dataset/relabeled_fastas \
+  -o analyses/bacteroides_variation/genomes/ncbi/ncbi_dataset/kraken_header_fastas > \
+  analyses/bacteroides_variation/genomes/ncbi/ncbi_dataset/header_trim.log
+```
+
+After this, I created a kraken db that included the *Bacteroides* genomes:
+
+```{bash, eval=FALSE}
+sbatch code/scripts/bacteroides_variation/build_kraken_db_18042025.sh
+```

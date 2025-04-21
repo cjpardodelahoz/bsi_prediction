@@ -1,0 +1,13 @@
+name: python3
+channels:
+  - conda-forge
+  - bioconda
+  - tensorflow
+  - plotly
+  - deepchem
+  - pytorch
+  - nvidia
+dependencies:
+  - python=3.13.2
+  - pandas=2.2.3
+

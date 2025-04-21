@@ -35,6 +35,7 @@ def process_jsonl(input_file, output_file):
                 # Extract relevant fields
                 data.append({
                     "accession": entry.get("accession"),
+                    "taxid": entry.get("organism", {}).get("taxId"),
                     "organism_name": entry.get("organism", {}).get("organismName"),
                     "species": entry.get("averageNucleotideIdentity", {}).get("submittedSpecies"),
                     "strain": entry.get("organism", {}).get("infraspecificNames", {}).get("strain"),

@@ -130,6 +130,12 @@ After this, I created a kraken db that included the *Bacteroides* genomes:
 sbatch code/scripts/bacteroides_variation/build_kraken_db_18042025.sh
 ```
 
+#### Read binning and assembly
+
+```{r}
+sbatch code/scripts/bacteroides_variation/classify_assemble.sh
+```
+
 ### Assembling *Bacteroides* MAGs with VAMB binning
 
 I preprocessed the reads with fastp and generated a metagenomic assembly with metaSPAdes for each metagenomic library:

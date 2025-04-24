@@ -1,0 +1,12 @@
+name: fastp
+channels:
+  - conda-forge
+  - bioconda
+  - tensorflow
+  - plotly
+  - deepchem
+  - pytorch
+  - nvidia
+dependencies:
+  - fastp=0.24.1
+

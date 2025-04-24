@@ -1,0 +1,12 @@
+name: spades
+channels:
+  - conda-forge
+  - bioconda
+  - tensorflow
+  - plotly
+  - deepchem
+  - pytorch
+  - nvidia
+dependencies:
+  - spades=4.1.0
+

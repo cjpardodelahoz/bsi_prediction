@@ -1,0 +1,13 @@
+name: hmmerseqkit
+channels:
+  - conda-forge
+  - bioconda
+  - tensorflow
+  - plotly
+  - deepchem
+  - pytorch
+  - nvidia
+dependencies:
+  - hmmer=3.4
+  - seqkit=2.10.0
+

@@ -1,7 +1,7 @@
 #!/bin/bash
 
 #SBATCH --array=1-395%10  # Adjust the range (1-395) based on the number of libraries
-#SBATCH --mem=8G         # Memory per task
+#SBATCH --mem-per-cpu=8G         # Memory per task
 #SBATCH -c 4             # Number of CPU cores per task
 #SBATCH --time=120:00:00  # Maximum runtime
 #SBATCH --error=log/bacteroides_variation/classify_assemble_%A_%a.err
@@ -33,16 +33,17 @@ R2="${READS_DIR}/${sample_name}/${sample_name}_R2_all.fastq.gz"
 conda activate kraken2
 kraken2 --db ${KRAKEN_DB} \
         --paired ${R1} ${R2} \
-        --threads 16 \
+        --threads 4 \
         --report ${CLASSIFIED_DIR}/${sample_name}/${sample_name}_kraken_report.txt \
         --output ${CLASSIFIED_DIR}/${sample_name}/${sample_name}_kraken_output.txt
-conda deactivate
 
 # Step 2: Extract reads classified as Bacteroides
-conda activate kraken2
 extract_kraken_reads.py -k ${CLASSIFIED_DIR}/${sample_name}/${sample_name}_kraken_output.txt \
+                        -r ${CLASSIFIED_DIR}/${sample_name}/${sample_name}_kraken_report.txt \
                         -s ${R1} -s2 ${R2} \
-                        -o ${BACTEROIDES_DIR}/${sample_name} \
+                        -o ${BACTEROIDES_DIR}/${sample_name}/${sample_name}_R1.fastq \
+                        -o2 ${BACTEROIDES_DIR}/${sample_name}/${sample_name}_R2.fastq \
+                        --fastq-output \
                         --include-children --taxid 816  # TaxID for Bacteroides
 conda deactivate
 
@@ -72,8 +73,8 @@ spades.py --meta \
           -2 ${TRIMMED_DIR}/${sample_name}/${sample_name}_R2_trimmed.fastq.gz \
           -o ${ASSEMBLY_DIR}/${sample_name} \
           -k 21,33,55,75,95 \
-          -t 16 \
-          -m 64
+          -t 4 \
+          -m 32
 conda deactivate
 
 echo "Pipeline completed for sample: ${sample_name}"

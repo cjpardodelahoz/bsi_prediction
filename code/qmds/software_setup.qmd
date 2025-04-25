@@ -46,6 +46,7 @@ conda env create -f software/conda/kraken2.yml
 conda env create -f software/conda/ncbi.yml
 conda env create -f software/conda/spades.yml
 conda env create -f software/conda/fastp.yml
+conda env create -f software/conda/hmmerseqkit.yml
 ```
 
 Download the required DBs:

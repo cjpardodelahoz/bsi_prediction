@@ -132,7 +132,7 @@ sbatch code/scripts/bacteroides_variation/build_kraken_db_18042025.sh
 
 #### Read binning and assembly
 
-```{r}
+```{bash, eval=FALSE}
 sbatch code/scripts/bacteroides_variation/classify_assemble.sh
 ```
 
@@ -146,3 +146,23 @@ sbatch code/scripts/bacteroides_variation/yan_sd_2022_metaspades.sh
 # Plasmids
 sbatch code/scripts/bacteroides_variation/yan_sd_2022_metaplasmid.sh
 ```
+
+### Extracting 16S sequences
+
+I created a HMMER profile of 16S rRNA sequences using the seed alignment of the [Rfam RF00177](https://rfam.org/family/RF00177#tabview=tab2):
+
+```{bash, eval=false}
+#mkdir -p hmms/16S
+conda activate hmmerseqkit
+hmmbuild hmms/16S/RF00177_16S.hmm hmms/16S/RF00177.stockholm.txt
+
+# Test extraction tool
+sh software/custom/nhmmer_extract.sh -p hmms/16S/RF00177_16S.hmm \
+  -e 0 \
+  -i analyses/bacteroides_variation/genomes/kraken_binning/bacteroides_metaspades/s_1042AA/contigs.fasta \
+  -o test.fa \
+  -t hits.txt \
+  -c 1
+```
+
+**Why do I consistently get 2 16S copies (one from a *Bacteroides* and one from what seems to be a *Blautia*) from the metagenomes assembled from binned reads??**

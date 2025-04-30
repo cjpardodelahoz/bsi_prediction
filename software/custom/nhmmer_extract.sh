@@ -4,13 +4,14 @@
 
 # Function to display the help menu
 function show_help() {
-    echo "Usage: $0 -p <HMM_PROFILE> -e <EVALUE_THRESHOLD> -i <INPUT_FASTA> -o <OUTPUT_FASTA> [-t <OUTPUT_HITS>] [-c <CPUS>]"
+    echo "Usage: $0 -p <HMM_PROFILE> -e <EVALUE_THRESHOLD> -i <INPUT_FASTA> -o <OUTPUT_FASTA> -s <SAMPLE_NAME> [-t <OUTPUT_HITS>] [-c <CPUS>]"
     echo
     echo "Options:"
     echo "  -p, --profile         Path to the HMM profile file (e.g., 16S_rRNA.hmm)"
     echo "  -e, --evalue          E-value threshold for filtering hits (e.g., 0)"
     echo "  -i, --input           Input FASTA file to search"
     echo "  -o, --output          Output FASTA file to save extracted sequences"
+    echo "  -s, --sample          Sample name to include in the sequence headers (e.g., s_1042A)"
     echo "  -t, --table           Path to save the HMMER output table (optional, default: temporary file)"
     echo "  -c, --cpus            Number of CPU cores to use for nhmmer (optional, default: 4)"
     echo "  -h, --help            Display this help menu"
@@ -26,6 +27,7 @@ while [[ "$#" -gt 0 ]]; do
         -e|--evalue) EVALUE_THRESHOLD="$2"; shift ;;
         -i|--input) INPUT_FASTA="$2"; shift ;;
         -o|--output) OUTPUT_FASTA="$2"; shift ;;
+        -s|--sample) SAMPLE_NAME="$2"; shift ;;
         -t|--table) OUTPUT_HITS="$2"; shift ;;
         -c|--cpus) CPUS="$2"; shift ;;
         -h|--help) show_help; exit 0 ;;
@@ -35,7 +37,7 @@ while [[ "$#" -gt 0 ]]; do
 done
 
 # Check if all required arguments are provided
-if [[ -z "$HMM_PROFILE" || -z "$EVALUE_THRESHOLD" || -z "$INPUT_FASTA" || -z "$OUTPUT_FASTA" ]]; then
+if [[ -z "$HMM_PROFILE" || -z "$EVALUE_THRESHOLD" || -z "$INPUT_FASTA" || -z "$OUTPUT_FASTA" || -z "$SAMPLE_NAME" ]]; then
     echo "Error: Missing required arguments."
     show_help
     exit 1
@@ -61,13 +63,17 @@ fi
 nhmmer --tblout ${OUTPUT_HITS} --cpu ${CPUS} ${HMM_PROFILE} ${INPUT_FASTA}
 
 # Step 2: Extract matching regions based on coordinates
+seq_counter=1  # Initialize sequence counter
 grep -v "^#" ${OUTPUT_HITS} | awk -v evalue="$EVALUE_THRESHOLD" '$13 <= evalue {print $1, $9, $10, $12}' | while read -r target envfrom envto strand; do
     # Handle reverse complement if strand is '-'
     if [[ "$strand" == "-" ]]; then
-        seqkit subseq --chr "$target" -r "$envto:$envfrom" ${INPUT_FASTA} | seqkit seq -r -p >> ${OUTPUT_FASTA}
+        seqkit subseq --chr "$target" -r "$envto:$envfrom" ${INPUT_FASTA} | seqkit seq -r -p | \
+        sed "s|^>.*|>${SAMPLE_NAME}_${seq_counter}|" >> ${OUTPUT_FASTA}
     else
-        seqkit subseq --chr "$target" -r "$envfrom:$envto" ${INPUT_FASTA} >> ${OUTPUT_FASTA}
+        seqkit subseq --chr "$target" -r "$envfrom:$envto" ${INPUT_FASTA} | \
+        sed "s|^>.*|>${SAMPLE_NAME}_${seq_counter}|" >> ${OUTPUT_FASTA}
     fi
+    seq_counter=$((seq_counter + 1))  # Increment sequence counter
 done
 
 # Check if any sequences were extracted

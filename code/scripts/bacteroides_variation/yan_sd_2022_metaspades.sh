@@ -11,7 +11,7 @@
 # Activate conda
 source $(conda info --base)/etc/profile.d/conda.sh
 
-# Set paths
+# # Set paths
 READS_DIR="data/reads/yan_sd_2022"
 FASTP_DIR="analyses/yan_sd_2022/fastp"
 ASSEMBLY_DIR="analyses/yan_sd_2022/assembly/metaspades"
@@ -50,3 +50,9 @@ spades.py --meta \
           -t 16 \
           -m 64
 conda deactivate
+
+# Step 3: Remove error-corrected reads and fastp-trimmed reads to save space
+rm -r ${ASSEMBLY_DIR}/${sample_name}/K*/* 
+rm -r ${ASSEMBLY_DIR}/${sample_name}/corrected/*  # Remove error-corrected reads
+rm -r ${FASTP_DIR}/${sample_name}/${sample_name}_R1_trimmed.fastq.gz
+rm -r ${FASTP_DIR}/${sample_name}/${sample_name}_R2_trimmed.fastq.gz

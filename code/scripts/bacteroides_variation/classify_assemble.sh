@@ -23,6 +23,7 @@ KRAKEN_DB="/data1/xavierj/carlos/dbs/kraken/18042025"
 sample_name=$(ls ${READS_DIR} | sed -n ${SLURM_ARRAY_TASK_ID}p)
 
 # Create output directories
+rm -r ${CLASSIFIED_DIR}/${sample_name} ${BACTEROIDES_DIR}/${sample_name} ${TRIMMED_DIR}/${sample_name} ${ASSEMBLY_DIR}/${sample_name}
 mkdir -p ${CLASSIFIED_DIR}/${sample_name} ${BACTEROIDES_DIR}/${sample_name} ${TRIMMED_DIR}/${sample_name} ${ASSEMBLY_DIR}/${sample_name}
 
 # Input files
@@ -78,3 +79,7 @@ spades.py --meta \
 conda deactivate
 
 echo "Pipeline completed for sample: ${sample_name}"
+
+# Remove error-corrected reads and Kmer directories to save space
+rm -f ${ASSEMBLY_DIR}/${sample_name}/corrected/*.fastq.gz
+rm -rf ${ASSEMBLY_DIR}/${sample_name}/K*/*

@@ -47,6 +47,7 @@ conda env create -f software/conda/ncbi.yml
 conda env create -f software/conda/spades.yml
 conda env create -f software/conda/fastp.yml
 conda env create -f software/conda/hmmerseqkit.yml
+conda env create -f software/conda/blast.yml
 ```
 
 I will store data and document files in the Xavier hard drive directly and create symlinks within each machine:

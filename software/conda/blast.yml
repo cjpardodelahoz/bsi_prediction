@@ -1,0 +1,12 @@
+name: blast
+channels:
+  - conda-forge
+  - bioconda
+  - tensorflow
+  - plotly
+  - deepchem
+  - pytorch
+  - nvidia
+dependencies:
+  - blast=2.16.0
+

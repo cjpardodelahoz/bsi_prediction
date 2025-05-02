@@ -149,7 +149,7 @@ sbatch code/scripts/bacteroides_variation/yan_sd_2022_metaplasmid.sh
 
 ### Extracting 16S sequences
 
-I created a HMMER profile of 16S rRNA sequences using the seed alignment of the [Rfam RF00177](https://rfam.org/family/RF00177#tabview=tab2):
+I created a HMMER profile of 16S rRNA sequences using the seed alignment of the [Rfam RF00177](https://rfam.org/family/RF00177#tabview=tab2), and extracted the 16S sequences from the targeted and metagenomic assemblies:
 
 ```{bash, eval=false}
 #mkdir -p hmms/16S
@@ -159,10 +159,121 @@ hmmbuild hmms/16S/RF00177_16S.hmm hmms/16S/RF00177.stockholm.txt
 # Test extraction tool
 sh software/custom/nhmmer_extract.sh -p hmms/16S/RF00177_16S.hmm \
   -e 0 \
-  -i analyses/bacteroides_variation/genomes/kraken_binning/bacteroides_metaspades/s_1042AA/contigs.fasta \
+  -i analyses/bacteroides_variation/genomes/kraken_binning/bacteroides_metaspades/s_1042A/contigs.fasta \
+  -s s_1042A \
   -o test.fa \
   -t hits.txt \
   -c 1
+
+# Extract 16S from targeted and untargeted assemblies
+sbatch code/scripts/bacteroides_variation/extract_targeted_16S.sh
+sbatch code/scripts/bacteroides_variation/extract_meta_16S.sh
 ```
 
-**Why do I consistently get 2 16S copies (one from a *Bacteroides* and one from what seems to be a *Blautia*) from the metagenomes assembled from binned reads??**
+After that, I compiled all the 16S sequences recovered with both approaches:
+
+```{bash, eval=FALSE}
+
+# Compiling 16S from target assemblies
+
+# Set paths
+TARGET_OUTPUT_DIR="analyses/bacteroides_variation/16S/targeted"
+TARGET_COMPILED_DIR="analyses/bacteroides_variation/16S/compiled"
+TARGET_COMPILED_FILE="${TARGET_COMPILED_DIR}/all_targeted_16S.fasta"
+
+# Create the compiled directory if it doesn't exist
+mkdir -p ${TARGET_COMPILED_DIR}
+
+# Initialize the compiled file
+> ${TARGET_COMPILED_FILE}
+
+# Loop through all sample directories and merge existing 16S sequences
+for target_sample_dir in ${TARGET_OUTPUT_DIR}/*; do
+  if [[ -d ${target_sample_dir} ]]; then
+    target_fasta_file="${target_sample_dir}/16S_sequences.fasta"
+    if [[ -f ${target_fasta_file} ]]; then
+      echo "Merging ${target_fasta_file} into ${TARGET_COMPILED_FILE}..."
+      cat ${target_fasta_file} >> ${TARGET_COMPILED_FILE}
+    else
+      echo "No 16S_sequences.fasta found in ${target_sample_dir}, skipping..."
+    fi
+  fi
+done
+
+
+# Compiling 16S from metagenomic assemblies
+
+# Set paths
+META_OUTPUT_DIR="analyses/bacteroides_variation/16S/meta"
+META_COMPILED_DIR="analyses/bacteroides_variation/16S/compiled"
+META_COMPILED_FILE="${META_COMPILED_DIR}/all_meta_16S.fasta"
+
+# Initialize the compiled file
+> ${META_COMPILED_FILE}
+
+# Loop through all sample directories and merge existing 16S sequences
+for meta_sample_dir in ${META_OUTPUT_DIR}/*; do
+  if [[ -d ${meta_sample_dir} ]]; then
+    meta_fasta_file="${meta_sample_dir}/16S_sequences.fasta"
+    if [[ -f ${meta_fasta_file} ]]; then
+      echo "Merging ${meta_fasta_file} into ${META_COMPILED_FILE}..."
+      cat ${meta_fasta_file} >> ${META_COMPILED_FILE}
+    else
+      echo "No 16S_sequences.fasta found in ${meta_sample_dir}, skipping..."
+    fi
+  fi
+done
+
+# Compile all 16S
+cat ${TARGET_COMPILED_FILE} ${META_COMPILED_FILE} > ${META_COMPILED_DIR}/compiled_16S.fasta
+```
+
+Finally, I classified the sequences with Kraken2 using the SILVA database and filtered the Bacteroides sequences:
+
+```{bash, eval=FALSE}
+# Build the SILVA DB for Kraken
+sbatch code/scripts/bacteroides_variation/build_silva_db.sh
+
+# Classify and filter Bacteroides 16S
+sbatch code/scripts/bacteroides_variation/classify_bacteroides_16S.sh
+```
+
+***Notes:***
+
+  - Why do I consistently get 2 16S copies (one from a *Bacteroides* and one from what seems to be a *Blautia*) from the metagenomes assembled from binned reads??
+    Potentially because some species classified as *Bacteroides* (e.g., *B. galacturonicus*) are actually part of the Clostridiales and closely realted to *Lachnospira*, which is in the same family as *Blautia*.
+  - There are 234 samples for which I did not extract a 16S sequence with an e-value of 0. Some of these seem to be cases where the 16S assembly is fragmented. See `cat analyses/bacteroides_variation/16S/targeted/s_FMT.0187P/16S_hits.tbl` for an example. Might be able to stich them together if absolutely needed.
+  - Check which metagenome assemblies failed and rerun with higher memory
+
+### Bacteroides 16S sequence diversity
+
+I did a BLASTn search of the *Bacteroides* 16S sequences against the NCBI database to get a preliminary idea of the diversity:
+
+```{bash, eval=FALSE}
+sbatch code/scripts/bacteroides_variation/blast_bacteroides_16S_ncbi.sh
+```
+
+### Matching 16S ASVs with full-length 16S sequences
+
+I wanted to know if the 16S sequences I extracted encompass the all the variation in the ASVs and what the correspondence is. I started by printing the Bacteroides 16S ASVs to a fasta:
+```{r, eval=FALSE}
+ bacteroides_asvs <- read_csv("data/tblASVtaxonomy_silva132_v4v5_filter.csv") %>%
+  filter(Genus == "Bacteroides") %>%
+  select(ASV, Sequence)
+
+# Save Bacteroides sequences in FASTA format
+writeLines(
+  paste0(">", bacteroides_asvs$ASV, "\n", bacteroides_asvs$Sequence),
+  "analyses/bacteroides_variation/16S/compiled/bacteroides_asvs.fasta"
+)
+```
+
+Then, I did a BLASTn search of *Bacteroides* 16S ASVs against a database of the full length 16S extracted from the metagenomes:
+
+```{bash, eval=false}
+sbatch code/scripts/bacteroides_variation/blast_bacteroides_asvs_to_meta.sh
+```
+
+
+# Replace new line characters with commas in a string using sed
+echo "$string" | sed ':a;N;$!ba;s/\n/,/g'

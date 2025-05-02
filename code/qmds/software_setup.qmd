@@ -49,13 +49,6 @@ conda env create -f software/conda/fastp.yml
 conda env create -f software/conda/hmmerseqkit.yml
 ```
 
-Download the required DBs:
-
-```{bash, eval=FALSE}
-# Kraken databases
-sbatch software/build_kraken_db.sh
-```
-
 I will store data and document files in the Xavier hard drive directly and create symlinks within each machine:
 
 ```{bash, eval=FALSE}

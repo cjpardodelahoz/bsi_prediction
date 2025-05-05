@@ -46,7 +46,7 @@ sbatch code/scripts/bacteroides_variation/fetch_yan_reads.sh
 rm -r /data1/xavierj/carlos/sra_repo/sra/*
 ```
 
-### Assembling *Bacteroides* MAGs with Kraken2 binning
+### Assembling *Bacteroides* MAGs with Kraken2 read binning
 
 #### Enriching Kraken database with Baceroides genomes from NCBI
 
@@ -136,7 +136,7 @@ sbatch code/scripts/bacteroides_variation/build_kraken_db_18042025.sh
 sbatch code/scripts/bacteroides_variation/classify_assemble.sh
 ```
 
-### Assembling *Bacteroides* MAGs with VAMB binning
+### Recovering *Bacteroides* MAGs with COMEBin using single and multi-sample binning
 
 I preprocessed the reads with fastp and generated a metagenomic assembly with metaSPAdes for each metagenomic library:
 
@@ -146,6 +146,8 @@ sbatch code/scripts/bacteroides_variation/yan_sd_2022_metaspades.sh
 # Plasmids
 sbatch code/scripts/bacteroides_variation/yan_sd_2022_metaplasmid.sh
 ```
+
+
 
 ### Extracting 16S sequences
 
@@ -245,17 +247,10 @@ sbatch code/scripts/bacteroides_variation/classify_bacteroides_16S.sh
   - There are 234 samples for which I did not extract a 16S sequence with an e-value of 0. Some of these seem to be cases where the 16S assembly is fragmented. See `cat analyses/bacteroides_variation/16S/targeted/s_FMT.0187P/16S_hits.tbl` for an example. Might be able to stich them together if absolutely needed.
   - Check which metagenome assemblies failed and rerun with higher memory
 
-### Bacteroides 16S sequence diversity
-
-I did a BLASTn search of the *Bacteroides* 16S sequences against the NCBI database to get a preliminary idea of the diversity:
-
-```{bash, eval=FALSE}
-sbatch code/scripts/bacteroides_variation/blast_bacteroides_16S_ncbi.sh
-```
-
 ### Matching 16S ASVs with full-length 16S sequences
 
 I wanted to know if the 16S sequences I extracted encompass the all the variation in the ASVs and what the correspondence is. I started by printing the Bacteroides 16S ASVs to a fasta:
+
 ```{r, eval=FALSE}
  bacteroides_asvs <- read_csv("data/tblASVtaxonomy_silva132_v4v5_filter.csv") %>%
   filter(Genus == "Bacteroides") %>%
@@ -274,6 +269,121 @@ Then, I did a BLASTn search of *Bacteroides* 16S ASVs against a database of the 
 sbatch code/scripts/bacteroides_variation/blast_bacteroides_asvs_to_meta.sh
 ```
 
+I also did a BLASTn search of the *Bacteroides* 16S sequences against the NCBI database to get a preliminary idea of the diversity:
 
+```{bash, eval=FALSE}
+# Run blast against NCBI
+sbatch code/scripts/bacteroides_variation/blast_bacteroides_16S_ncbi.sh
+```
+
+The BLAST search only returned the NCBI TaxIDs of the hits, so I retrieved the correspoding species names:
+
+```{bash, eval=FALSE}
+# NCBI CLI
+conda activate ncbi
+
+# Input file with TaxIDs (one per line)
+TAXID_FILE="analyses/bacteroides_variation/16S/compiled/taxid_hits.txt"
+
+# Output file for results
+OUTPUT_FILE="analyses/bacteroides_variation/16S/compiled/taxid_species.tsv"
+
+# Initialize the output file
+> $OUTPUT_FILE
+
+# Loop through each TaxID in the file
+while read -r TAXID; do
+    # Run the datasets command for the current TaxID
+    datasets summary taxonomy taxon $TAXID | \
+    grep -o '"species":{"id":[0-9]*,"name":"[^"]*"}' | \
+    sed -E "s/.*\"id\":[0-9]+,\"name\":\"([^\"]+)\".*/${TAXID}\t\1/" >> $OUTPUT_FILE
+done < $TAXID_FILE
+```
+
+With this information, I was able to summarize the performance of the two strategies for 16S sequence assembly from metagenomes with respect to the number matching 16S ASVs:
+
+```{r}
+# Load the BLAST results and species ids
+meta_to_ncbi_blast <- read_tsv("analyses/bacteroides_variation/16S/compiled/bacteroides_ncbi_blast.txt")
+asv_to_meta_blast <- read_tsv("analyses/bacteroides_variation/16S/compiled/bacteroides_asv_to_meta_blast.txt", col_names = F)
+colnames(asv_to_meta_blast) <- c("asv", "hit", "pident", "qlen", "slen", "alignment_length", "mismatches", "gaps")
+taxid_species <- read_tsv("analyses/bacteroides_variation/16S/compiled/taxid_species.tsv", col_names = F)
+
+# Wrangle NCBI blast results to get IDs for the metagenomic 16S seqs
+meta_to_ncbi_curated_blast <- meta_to_ncbi_blast %>%
+  left_join(taxid_species, by = c("sscinames" = "X1")) %>%
+  rename(species = X2) %>%
+  group_by(qseqid) %>%
+  slice_max(order_by = pident, with_ties = FALSE, n = 1) %>%
+  ungroup() %>%
+  mutate(method = str_extract(qseqid, "meta|targeted"))
+
+# Add meta IDs to ASV blast results
+asv_to_meta_map <- asv_to_meta_blast %>%
+  left_join(select(meta_to_ncbi_curated_blast, qseqid, species, sacc, method), by = c(hit = "qseqid")) %>%
+  group_by(asv) %>%
+  slice_max(order_by = pident, with_ties = TRUE, n = 1)
+
+# Summarize recovery by method
+recovery_summary <- asv_to_meta_map %>%
+  mutate(bacteroides_species = str_detect(species, "Bacteroides")) %>% # Flag rows with "Bacteroides" in species
+  group_by(method) %>%
+  summarise(
+    asvs_mismatches_0 = n_distinct(asv[mismatches == 0]),
+    asvs_mismatches_1 = n_distinct(asv[mismatches == 1]),
+    asvs_mismatches_2 = n_distinct(asv[mismatches == 2]),
+    asvs_mismatches_gt_2 = n_distinct(asv[mismatches > 2]),
+    asvs_mismatches_0_bacteroides = n_distinct(asv[mismatches == 0 & bacteroides_species]),
+    asvs_mismatches_1_bacteroides = n_distinct(asv[mismatches == 1 & bacteroides_species]),
+    asvs_mismatches_2_bacteroides = n_distinct(asv[mismatches == 2 & bacteroides_species]),
+    asvs_mismatches_gt_2_bacteroides = n_distinct(asv[mismatches > 2 & bacteroides_species])
+  ) %>%
+  ungroup()
+
+# View the summary table
+print(recovery_summary)
+```
+
+These results indicate that **assembling the full metagenomic library is a better strategy to recover near-full-length 16S sequences that match 16S ASVs from the amplicon data**.
+
+Nevertheless, a couple of 16S ASVs had exact matches with 16S sequences recovered with the targeted strategy but not with the meta strategy: 
+
+```{r}
+# Check which unique ASVs with mismatches == 0 in "targeted" are not in "meta"
+targeted_asvs <- asv_to_meta_map %>%
+  filter(method == "targeted", mismatches == 0) %>%
+  pull(asv) %>%
+  unique()
+
+meta_asvs <- asv_to_meta_map %>%
+  filter(method == "meta", mismatches == 0) %>%
+  pull(asv) %>%
+  unique()
+
+not_recovered_asvs <- setdiff(targeted_asvs, meta_asvs)
+
+if (length(not_recovered_asvs) > 0) {
+  message("The following ASVs were not recovered by 'meta':")
+  print(not_recovered_asvs)
+} else {
+  message("All ASVs with mismatches == 0 in 'targeted' were recovered by 'meta'.")
+}
+```
+
+Finally, I summarized how many different species match each 16S ASV based on their similarity with the full-length 16S sequences. I will reassess these correspondences once I have a phylogeny. I also summarized the prevalence of each ASV in the HCT patient population:
+
+```{r}
+# Create a summary table with distinct species for each ASV
+asv_species_summary <- asv_to_meta_map %>%
+  group_by(asv, mismatches) %>%
+  summarise(
+    n_species = n_distinct(species), # Count distinct species
+    species = paste(unique(species), collapse = ", ") # Concatenate distinct species names
+  ) %>%
+  ungroup()
+
+# View the resulting table
+print(asv_species_summary)
+```
 # Replace new line characters with commas in a string using sed
 echo "$string" | sed ':a;N;$!ba;s/\n/,/g'

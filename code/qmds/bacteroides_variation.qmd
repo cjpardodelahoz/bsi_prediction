@@ -46,7 +46,7 @@ sbatch code/scripts/bacteroides_variation/fetch_yan_reads.sh
 rm -r /data1/xavierj/carlos/sra_repo/sra/*
 ```
 
-### Assembling *Bacteroides* MAGs with Kraken2 read binning
+### Assembling *Bacteroides* metagenomes with Kraken2 read binning
 
 #### Enriching Kraken database with Baceroides genomes from NCBI
 
@@ -132,22 +132,146 @@ sbatch code/scripts/bacteroides_variation/build_kraken_db_18042025.sh
 
 #### Read binning and assembly
 
+Finally, I classified and the reads witht he custom Kraken2 database, extracted the reads classified as *Bacteroides*, and assembled *Bacteroides* metagenomes with metaSPAdes:
+
 ```{bash, eval=FALSE}
 sbatch code/scripts/bacteroides_variation/classify_assemble.sh
 ```
 
-### Recovering *Bacteroides* MAGs with COMEBin using single and multi-sample binning
+To save time during binning, I filtered the assembled contigs and kept only the ones >= 1000 bp:
+
+```{bash, eval=FALSE}
+sbatch code/scripts/bacteroides_variation/bacteroides_filter_contigs.sh
+```
+
+### Assembling full metagenomes
 
 I preprocessed the reads with fastp and generated a metagenomic assembly with metaSPAdes for each metagenomic library:
 
 ```{bash, eval=FALSE}
 # Metagenome
-sbatch code/scripts/bacteroides_variation/yan_sd_2022_metaspades.sh
+sbatch code/scripts/bacteroides_variation/yan_sd_2022_metaspades.sh #5599019
 # Plasmids
-sbatch code/scripts/bacteroides_variation/yan_sd_2022_metaplasmid.sh
+#sbatch code/scripts/bacteroides_variation/yan_sd_2022_metaplasmid.sh
 ```
 
+To save time during binning, I filtered the assembled contigs and kept only the ones >= 1000 bp:
 
+```{bash, eval=FALSE}
+sbatch code/scripts/bacteroides_variation/yan_sd_2022_filter_contigs.sh
+```
+
+### Recovering *Bacteroides* MAGs
+
+I am now going to run two binning strategies (single and multi-sample) and two binning algorithms (VAMB and COMEBin) starting from the two assemblies generated prior.
+
+#### Single-sample binning
+
+I started with single-sample binning with VAMB:
+
+```{bash, eval=FALSE}
+# Single sample binning
+sbatch code/scripts/bacteroides_variation/yan_sd_2022_comebin_single.sh
+
+# VAMB binning
+sbatch code/scripts/bacteroides_variation/yan_sd_2022_vamb_single.sh
+sbatch code/scripts/bacteroides_variation/bacteroides_vamb_single.sh
+```
+
+#### Multi-sample binning
+
+#### MAG quality assesment
+
+First, I needed to compile the bins obtained from the different strategies I used. 
+
+The single-sample bins from the full metagenomes obtained by VAMB:
+
+```{bash, eval=FALSE}
+# Define paths
+VAMB_DIR="analyses/yan_sd_2022/binning/vamb/single"
+COMPILED_DIR="analyses/yan_sd_2022/binning/compiled"
+
+# Create the compiled directory if it doesn't exist
+mkdir -p ${COMPILED_DIR}
+
+# Loop through all bins in the VAMB output directories
+find ${VAMB_DIR} -type f -name "*.fna" | while read -r bin_path; do
+    # Extract sample name and bin number from the path
+    sample_name=$(echo ${bin_path} | awk -F'/' '{print $(NF-3)}')  # Extract sample name (e.g., s_1042A)
+    bin_number=$(basename ${bin_path} .fna)                      # Extract bin number (e.g., 3)
+
+    # Construct the new filename
+    new_filename="${sample_name}_${bin_number}_meta_vamb_single.fna"
+
+    # Copy the bin to the compiled directory with the new name
+    cp ${bin_path} ${COMPILED_DIR}/${new_filename}
+done
+```
+
+The single-sample bins from the targeted *Bacteroides* metagenomes obtained by VAMB:
+
+```{bash, eval=FALSE}
+# Define paths
+BIN_DIR="analyses/bacteroides_variation/binning/vamb/single"
+COMPILED_DIR="analyses/bacteroides_variation/binning/compiled"
+
+# Create the compiled directory if it doesn't exist
+mkdir -p ${COMPILED_DIR}
+
+# Loop through all bins in the VAMB output directories
+find ${BIN_DIR} -type f -name "*.fna" | while read -r bin_path; do
+    # Extract sample name and bin number from the path
+    sample_name=$(echo ${bin_path} | awk -F'/' '{print $(NF-3)}')  # Extract sample name (e.g., s_1042A)
+    bin_number=$(basename ${bin_path} .fna)                      # Extract bin number (e.g., 3)
+
+    # Construct the new filename
+    new_filename="${sample_name}_${bin_number}_bacteroides_vamb_single.fna"
+
+    # Copy the bin to the compiled directory with the new name
+    cp ${bin_path} ${COMPILED_DIR}/${new_filename}
+done
+```
+
+Then, I used GTDB-tk to get identities of the bins 
+
+```{bash, eval=FALSE}
+# Classify bins with GTDB
+sbatch code/scripts/bacteroides_variation/yan_sd_2022_gtdb.sh
+sbatch code/scripts/bacteroides_variation/bacteroides_gtdb.sh
+```
+
+And then I copied the ones from the family Bacteroidaceae:
+
+```{bash, eval=FALSE}
+# Define input and output paths
+GTDB_FILES=("analyses/yan_sd_2022/binning/gtdb/gtdbtk.bac120.summary.tsv" "analyses/bacteroides_variation/binning/gtdb/gtdbtk.bac120.summary.tsv")
+BIN_DIRS=("analyses/yan_sd_2022/binning/compiled" "analyses/bacteroides_variation/binning/compiled")
+OUTPUT_DIR="analyses/bacteroides_variation/genomes/mags"
+
+# Create the output directory if it doesn't exist
+mkdir -p ${OUTPUT_DIR}
+# Loop through GTDB files
+for i in "${!GTDB_FILES[@]}"; do
+  gtdb_file="${GTDB_FILES[$i]}"
+  bin_dir="${BIN_DIRS[$i]}"
+  
+  # Extract filenames of bins classified in the family Bacteroidaceae and copy them
+  awk -F'\t' 'NR > 1 && $2 ~ /f__Bacteroidaceae/ {print $1}' "${gtdb_file}" | while read -r bin_file; do
+    full_path="${bin_dir}/${bin_file}.fna"
+    if [[ -f ${full_path} ]]; then
+      cp "${full_path}" "${OUTPUT_DIR}/"
+    else
+      echo "File ${full_path} not found, skipping..."
+    fi
+  done
+done
+```
+
+On these Bacteroidaceae MAGs, I ran CheckM2:
+
+```{bash, eval=FALSE}
+sbatch code/scripts/bacteroides_variation/bacteroides_checkm2.sh #5911622
+```
 
 ### Extracting 16S sequences
 

@@ -1,8 +1,8 @@
 #!/bin/bash
 
-#SBATCH --array=1-395%10  # Adjust the range (1-395) based on the number of libraries
-#SBATCH --mem=64G         # Memory per task
-#SBATCH -c 16             # Number of CPU cores per task
+#SBATCH --array=211,367%5  # Adjust the range (1-395) based on the number of libraries
+#SBATCH --mem=192G         # Memory per task
+#SBATCH -c 24             # Number of CPU cores per task
 #SBATCH --time=120:00:00   # Maximum runtime
 #SBATCH --error=log/bacteroides_variation/yan_sd_2022_metassembly_%A_%a.err
 #SBATCH --output=log/bacteroides_variation/yan_sd_2022_metassembly_%A_%a.out
@@ -18,6 +18,8 @@ ASSEMBLY_DIR="analyses/yan_sd_2022/assembly/metaspades"
 
 # Get the sample name for the current task
 sample_name=$(ls ${READS_DIR} | sed -n ${SLURM_ARRAY_TASK_ID}p)
+
+rm -r ${ASSEMBLY_DIR}/${sample_name}/ # TEMPORARY REMOVE OLD ASSEMBLY
 
 # Create output directories
 mkdir -p ${FASTP_DIR}/${sample_name} ${ASSEMBLY_DIR}/${sample_name}
@@ -47,8 +49,8 @@ spades.py --meta \
           -2 ${FASTP_DIR}/${sample_name}/${sample_name}_R2_trimmed.fastq.gz \
           -o ${ASSEMBLY_DIR}/${sample_name} \
           -k 21,33,55,75,95 \
-          -t 16 \
-          -m 64
+          -t 24 \
+          -m 192
 conda deactivate
 
 # Step 3: Remove error-corrected reads and fastp-trimmed reads to save space

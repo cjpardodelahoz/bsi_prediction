@@ -150,7 +150,7 @@ I preprocessed the reads with fastp and generated a metagenomic assembly with me
 
 ```{bash, eval=FALSE}
 # Metagenome
-sbatch code/scripts/bacteroides_variation/yan_sd_2022_metaspades.sh #5599019
+sbatch code/scripts/bacteroides_variation/yan_sd_2022_metaspades.sh #5993302
 # Plasmids
 #sbatch code/scripts/bacteroides_variation/yan_sd_2022_metaplasmid.sh
 ```
@@ -272,6 +272,31 @@ On these Bacteroidaceae MAGs, I ran CheckM2:
 ```{bash, eval=FALSE}
 sbatch code/scripts/bacteroides_variation/bacteroides_checkm2.sh #5911622
 ```
+
+#### Comparing *Bacteroides* MAG recovery strategy
+
+```{r}
+# Load and merge GTBD results
+targeted_gtdb <- read_tsv("analyses/bacteroides_variation/binning/gtdb/gtdbtk.bac120.summary.tsv")
+meta_gtdb <- read_tsv("analyses/yan_sd_2022/binning/gtdb/gtdbtk.bac120.summary.tsv")
+full_gtdb <- bind_rows(targeted_gtdb, meta_gtdb)
+
+# Load CheckM2 results
+checkm <- read_tsv("analyses/bacteroides_variation/genomes/checkm2/quality_report.tsv")
+
+# 
+bacteroides_mag_data <- checkm %>%
+  mutate(assembly_strategy = case_when(
+            str_detect(Name, "bacteroides") ~ "targeted",
+            str_detect(Name, "meta") ~ "meta"
+          )
+        ) %>%
+  left_join(full_gtdb, by = c("Name" = "user_genome")) %>%
+  filter(Completeness >= 90 & Contamination <= 5 & str_detect(classification, "g__Bacteroides"))
+
+
+```
+
 
 ### Extracting 16S sequences
 

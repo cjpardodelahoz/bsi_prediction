@@ -1,0 +1,14 @@
+---
+title: "Dynamics of *Enterococcus* diversity"
+engine: knitr
+format:
+  html:
+    code-fold: true
+    code-summary: "Show the code"
+---
+
+This is an initial exploration of the dynamics of *Enteroccocus* diversity in the HCT patient population. I have the following goals:
+
+ - Stratify patients with *Enterococcus* dominations between those who did and did not get *Enterococcus* infections.
+ - Link 16S ASVs to full-length 16S sequences assembled from metagenomes and the corresponding species identities.
+ - Determine wether VRE 

@@ -150,7 +150,7 @@ I preprocessed the reads with fastp and generated a metagenomic assembly with me
 
 ```{bash, eval=FALSE}
 # Metagenome
-sbatch code/scripts/bacteroides_variation/yan_sd_2022_metaspades.sh #5993302
+sbatch code/scripts/bacteroides_variation/yan_sd_2022_metaspades.sh #211 (653) and 367 (FMT.0111) did not work after trying many memory configurations
 # Plasmids
 #sbatch code/scripts/bacteroides_variation/yan_sd_2022_metaplasmid.sh
 ```
@@ -171,7 +171,7 @@ I started with single-sample binning with VAMB:
 
 ```{bash, eval=FALSE}
 # Single sample binning
-sbatch code/scripts/bacteroides_variation/yan_sd_2022_comebin_single.sh
+#sbatch code/scripts/bacteroides_variation/yan_sd_2022_comebin_single.sh
 
 # VAMB binning
 sbatch code/scripts/bacteroides_variation/yan_sd_2022_vamb_single.sh
@@ -179,6 +179,42 @@ sbatch code/scripts/bacteroides_variation/bacteroides_vamb_single.sh
 ```
 
 #### Multi-sample binning
+
+I started with multi-sample binning with VAMB. First, I generated the files with the list of samples sequenced with metagenomes for each patient:
+
+```{r, eval=FALSE}
+# Load required library
+suppressMessages(library(tidyverse))
+
+# Load Patient sample data
+patient_samples <- suppressMessages(
+        read_csv("data/tblASVsamples.csv",
+            col_types = cols(
+                .default = col_guess(),
+                Pool = col_character())) %>%
+        filter(!is.na(AccessionShotgun)) %>%
+        select(PatientID, SampleID) %>%
+        mutate(SampleID = paste0("s_", SampleID)) %>% # to ensure all filenames start with a letter rather than a number
+        distinct())
+
+# Create directory for patient sample lists
+dir.create("analyses/yan_sd_2022/binning/patient_samples", recursive = TRUE, showWarnings = FALSE)
+
+# Save SampleIDs for each PatientID to separate .txt files
+unique_patient_ids <- unique(patient_samples$PatientID)
+for (patient_id in unique_patient_ids) {
+  sample_ids <- patient_samples$SampleID[patient_samples$PatientID == patient_id]
+  file_path <- paste0("analyses/yan_sd_2022/binning/patient_samples/", patient_id, ".txt")
+  writeLines(sample_ids, file_path)
+}
+```
+
+These files are needed to arrange assembly concatenation and read mapping. After that, I concatenated the assemblies from each patient, mapped the reads, and ran multi-sample VAMB:
+
+```{bash, eval=FALSE}
+sbatch code/scripts/bacteroides_variation/yan_sd_2022_vamb_multi.sh #6460458
+sbatch code/scripts/bacteroides_variation/bacteroides_vamb_multi.sh #6451791
+```
 
 #### MAG quality assesment
 
@@ -270,12 +306,15 @@ done
 On these Bacteroidaceae MAGs, I ran CheckM2:
 
 ```{bash, eval=FALSE}
-sbatch code/scripts/bacteroides_variation/bacteroides_checkm2.sh #5911622
+sbatch code/scripts/bacteroides_variation/bacteroides_checkm2.sh
 ```
 
 #### Comparing *Bacteroides* MAG recovery strategy
 
 ```{r}
+# Load required library
+suppressMessages(library(tidyverse))
+
 # Load and merge GTBD results
 targeted_gtdb <- read_tsv("analyses/bacteroides_variation/binning/gtdb/gtdbtk.bac120.summary.tsv")
 meta_gtdb <- read_tsv("analyses/yan_sd_2022/binning/gtdb/gtdbtk.bac120.summary.tsv")
@@ -302,7 +341,7 @@ bacteroides_mag_data <- checkm %>%
 
 I created a HMMER profile of 16S rRNA sequences using the seed alignment of the [Rfam RF00177](https://rfam.org/family/RF00177#tabview=tab2), and extracted the 16S sequences from the targeted and metagenomic assemblies:
 
-```{bash, eval=false}
+```{bash, eval=FALSE}
 #mkdir -p hmms/16S
 conda activate hmmerseqkit
 hmmbuild hmms/16S/RF00177_16S.hmm hmms/16S/RF00177.stockholm.txt
@@ -414,7 +453,7 @@ writeLines(
 
 Then, I did a BLASTn search of *Bacteroides* 16S ASVs against a database of the full length 16S extracted from the metagenomes:
 
-```{bash, eval=false}
+```{bash, eval=FALSE}
 sbatch code/scripts/bacteroides_variation/blast_bacteroides_asvs_to_meta.sh
 ```
 
@@ -534,5 +573,13 @@ asv_species_summary <- asv_to_meta_map %>%
 # View the resulting table
 print(asv_species_summary)
 ```
-# Replace new line characters with commas in a string using sed
-echo "$string" | sed ':a;N;$!ba;s/\n/,/g'
+
+## Polysaccharide degradation potential variation
+
+### CGC prediction
+
+I predicted CAZyme gene clusters (CGC) using the dbCAN3 annotation pipeline on the Bacteroidaceae MAGs I recovered previously:
+
+```{bash, eval=FALSE}
+sbatch code/scripts/bacteroides_variation/bacteroides_dbcan.sh #6276228
+```

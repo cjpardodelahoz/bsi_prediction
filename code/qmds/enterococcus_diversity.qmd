@@ -11,4 +11,78 @@ This is an initial exploration of the dynamics of *Enteroccocus* diversity in th
 
  - Stratify patients with *Enterococcus* dominations between those who did and did not get *Enterococcus* infections.
  - Link 16S ASVs to full-length 16S sequences assembled from metagenomes and the corresponding species identities.
- - Determine wether VRE 
+ - Characterize genome-level strain diversity of *Enterococcus* across all samples with metagenomes
+ - Determine whether dominating strains of *Enterococcus* colonize before or after hospitalization for HCT
+ - Quantify *Enterococcus* strain sharing between patients
+ - Quantify *Enterococcus* strain diversity within patients and through time during dominations
+
+ ## Summary of dominations and inections
+ 
+ It is already
+
+```{r}
+ # Load required libraries and functions
+suppressMessages(library(tidyverse))
+source("code/rfunctions/data_helpers.r")
+
+# Prepare genus-level counts
+tblrel_genus_meta <- prep_taxa_counts("genus")
+
+# Summarize patients with Enterococcus dominations and infections
+summary_data <- tblrel_genus_meta %>%
+  group_by(PatientID) %>%
+  summarize(
+    ever_dominated = any(Enterococcus_abund >= 0.3, na.rm = TRUE),
+    ever_infected = any(Enterococcus_infection == TRUE, na.rm = TRUE)
+  )
+
+# Prepare data for plotting
+plot_summary_data <- summary_data %>%
+  mutate(
+    domination_status = ifelse(ever_dominated, "Dominated", "Not Dominated"),
+    infection_status = ifelse(ever_infected, "Infected", "Not Infected")
+  ) %>%
+  group_by(domination_status, infection_status) %>%
+  summarize(count = n(), .groups = "drop")
+
+# Create the bar plot
+ggplot(plot_summary_data, aes(x = domination_status, y = count, fill = infection_status)) +
+  geom_bar(stat = "identity", position = "stack") +
+  geom_text(aes(label = count), position = position_stack(vjust = 0.5), color = "black") +
+  scale_fill_manual(
+    values = c("Infected" = "#0D7E2B", "Not Infected" = "gray75")
+  ) +
+  labs(
+    x = "Domination status",
+    y = "Number of patients",
+    fill = "Infection status"
+  ) +
+  custom_theme
+```
+
+Now,
+
+```{r}
+# Load sample metadata
+tblASVsamples <- read_csv("data/tblASVsamples.csv")
+
+# Filter for patients who got dominated and infected with at least one AccessionShotgun
+dominated_infected <- summary_data %>%
+  filter(ever_dominated, ever_infected) %>%
+  inner_join(tblASVsamples, by = "PatientID") %>%
+  filter(!is.na(AccessionShotgun)) %>%
+  pull(PatientID) %>%
+  unique()
+
+# Filter for patients who got dominated but not infected with at least one AccessionShotgun
+dominated_not_infected <- summary_data %>%
+  filter(ever_dominated, !ever_infected) %>%
+  inner_join(tblASVsamples, by = "PatientID") %>%
+  filter(!is.na(AccessionShotgun)) %>%
+  pull(PatientID) %>%
+  unique()
+
+# Print the results
+dominated_infected
+dominated_not_infected
+```

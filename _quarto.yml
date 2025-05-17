@@ -25,6 +25,9 @@ website:
       - section: "Gut depletion precedes BSIs?"
         contents:
           - code/qmds/depletion_bsi_risk.qmd
+      - section: "Enterococcus epidemiology"
+        contents:
+          - code/qmds/enterococcus_diversity.qmd
 format:
   html:
     theme:

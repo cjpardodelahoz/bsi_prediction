@@ -51,6 +51,7 @@ conda env create -f software/conda/blast.yml
 conda env create -f software/conda/bowtie2.yml
 conda env create -f software/conda/checkm2.yml
 conda env create -f software/conda/gtdb.yml
+conda env create -f software/conda/dbcan.yml
 ```
 
 GTDB database:
@@ -58,6 +59,13 @@ GTDB database:
 ```{bash, eval=FALSE}
 sbatch software/conda/download_gtdbtk_db.sh
 sbatch software/conda/gtdb_mash_db.sh
+```
+
+dbCAN database:
+
+```{bash, eval=FALSE}
+conda activate dbcan
+run_dbcan database --db_dir ../dbs/dbcan
 ```
 
 I will store data and document files in the Xavier hard drive directly and create symlinks within each machine:

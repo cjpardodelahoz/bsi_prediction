@@ -86,3 +86,34 @@ dominated_not_infected <- summary_data %>%
 dominated_infected
 dominated_not_infected
 ```
+
+ ## Strain-resolved genome diversity
+
+ ### MAG quality filtering
+
+ I compiled the *Enterococcus* MAGs binned as described in the [Exploring *Bacteroides* molecular variation]() section:
+
+ ```{bash, eval=FALSE}
+GTDB_FILE="analyses/yan_sd_2022/binning/gtdb/gtdbtk.bac120.summary.tsv"
+BIN_DIR="analyses/yan_sd_2022/binning/compiled"
+OUTPUT_DIR="analyses/enterococcus_diversity/genomes/mags"
+
+# Create the output directory if it doesn't exist
+mkdir -p ${OUTPUT_DIR}
+
+# Extract filenames of bins classified in the family Enterococcaceae and copy them
+awk -F'\t' 'NR > 1 && $2 ~ /f__Enterococcaceae/ {print $1}' "${GTDB_FILE}" | while read -r bin_file; do
+  full_path="${BIN_DIR}/${bin_file}.fna"
+  if [[ -f ${full_path} ]]; then
+    cp "${full_path}" "${OUTPUT_DIR}/"
+  else
+    echo "File ${full_path} not found, skipping..."
+  fi
+done
+```
+
+And then I ran CheckM:
+
+```{bash, eval=FALSE}
+sbatch code/scripts/enterococcus_diversity/enterococcus_checkm2.sh #7047406
+```

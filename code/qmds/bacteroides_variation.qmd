@@ -212,8 +212,8 @@ for (patient_id in unique_patient_ids) {
 These files are needed to arrange assembly concatenation and read mapping. After that, I concatenated the assemblies from each patient, mapped the reads, and ran multi-sample VAMB:
 
 ```{bash, eval=FALSE}
-sbatch code/scripts/bacteroides_variation/yan_sd_2022_vamb_multi.sh #6460458
-sbatch code/scripts/bacteroides_variation/bacteroides_vamb_multi.sh #6451791
+sbatch code/scripts/bacteroides_variation/yan_sd_2022_vamb_multi.sh
+sbatch code/scripts/bacteroides_variation/bacteroides_vamb_multi.sh
 ```
 
 #### MAG quality assesment
@@ -268,12 +268,54 @@ find ${BIN_DIR} -type f -name "*.fna" | while read -r bin_path; do
 done
 ```
 
+The multi--sample bins from the full metagenomes obtained by VAMB:
+
+```{bash, eval=FALSE}
+# Define paths
+VAMB_DIR="analyses/yan_sd_2022/binning/vamb/multi"
+COMPILED_DIR="analyses/yan_sd_2022/binning/compiled"
+
+# Loop through all bins in the VAMB output directories
+find ${VAMB_DIR} -type f -name "*.fna" | while read -r bin_path; do
+    # Extract sample name and bin number from the path
+    sample_name=$(echo ${bin_path} | awk -F'/' '{print $NF}' | awk -F'_' '{print $1"_"$2}')
+    bin_number=$(basename ${bin_path%%.fna} | awk -F'/' '{print $NF}' | awk -F'_' '{print $4}')  # Extract bin number (e.g., 3)
+
+    # Construct the new filename
+    new_filename="${sample_name}_${bin_number}_meta_vamb_multi.fna"
+
+    # Copy the bin to the compiled directory with the new name
+    cp ${bin_path} ${COMPILED_DIR}/${new_filename}
+done
+```
+
+The single-sample bins from the targeted *Bacteroides* metagenomes obtained by VAMB:
+
+```{bash, eval=FALSE}
+# Define paths
+BIN_DIR="analyses/bacteroides_variation/binning/vamb/multi"
+COMPILED_DIR="analyses/bacteroides_variation/binning/compiled"
+
+# Loop through all bins in the VAMB output directories
+find ${BIN_DIR} -type f -name "*.fna" | while read -r bin_path; do
+    # Extract sample name and bin number from the path
+    sample_name=$(echo ${bin_path} | awk -F'/' '{print $NF}' | awk -F'_' '{print $1"_"$2}')
+    bin_number=$(basename ${bin_path%%.fna} | awk -F'/' '{print $NF}' | awk -F'_' '{print $4}')
+
+    # Construct the new filename
+    new_filename="${sample_name}_${bin_number}_bacteroides_vamb_multi.fna"
+
+    # Copy the bin to the compiled directory with the new name
+    cp ${bin_path} ${COMPILED_DIR}/${new_filename}
+done
+```
+
 Then, I used GTDB-tk to get identities of the bins 
 
 ```{bash, eval=FALSE}
 # Classify bins with GTDB
-sbatch code/scripts/bacteroides_variation/yan_sd_2022_gtdb.sh
-sbatch code/scripts/bacteroides_variation/bacteroides_gtdb.sh
+sbatch code/scripts/bacteroides_variation/yan_sd_2022_gtdb.sh #6815076
+sbatch code/scripts/bacteroides_variation/bacteroides_gtdb.sh #6828018
 ```
 
 And then I copied the ones from the family Bacteroidaceae:
@@ -581,5 +623,5 @@ print(asv_species_summary)
 I predicted CAZyme gene clusters (CGC) using the dbCAN3 annotation pipeline on the Bacteroidaceae MAGs I recovered previously:
 
 ```{bash, eval=FALSE}
-sbatch code/scripts/bacteroides_variation/bacteroides_dbcan.sh #6276228
+sbatch code/scripts/bacteroides_variation/bacteroides_dbcan.sh #6872575
 ```

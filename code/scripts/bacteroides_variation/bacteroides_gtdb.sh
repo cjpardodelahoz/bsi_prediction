@@ -4,7 +4,7 @@
 #SBATCH --error=log/bacteroides_variation/bacteroides_gtdb.err
 #SBATCH --time=96:00:00  # Adjust the time as needed
 #SBATCH --cpus-per-task=12
-#SBATCH --mem=64G
+#SBATCH --mem=128G
 #SBATCH --partition=cpu
 
 # Activate the GTDB environment

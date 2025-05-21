@@ -353,31 +353,80 @@ sbatch code/scripts/bacteroides_variation/bacteroides_checkm2.sh
 
 #### Comparing *Bacteroides* MAG recovery strategy
 
+I compared the number of near-complete (NC, >90% completeness and <5% contamination) MAGs of the genus *Bacteroides* recovered with different assembly and binning strategies:
+
 ```{r}
-# Load required library
+# Load required library and custom functions
 suppressMessages(library(tidyverse))
+source("code/rfunctions/data_helpers.r")
 
 # Load and merge GTBD results
-targeted_gtdb <- read_tsv("analyses/bacteroides_variation/binning/gtdb/gtdbtk.bac120.summary.tsv")
-meta_gtdb <- read_tsv("analyses/yan_sd_2022/binning/gtdb/gtdbtk.bac120.summary.tsv")
-full_gtdb <- bind_rows(targeted_gtdb, meta_gtdb)
+targeted_gtdb <- suppressMessages(read_tsv("analyses/bacteroides_variation/binning/gtdb/gtdbtk.bac120.summary.tsv"))
+meta_gtdb <- suppressMessages(read_tsv("analyses/yan_sd_2022/binning/gtdb/gtdbtk.bac120.summary.tsv"))
+full_gtdb <- suppressMessages(bind_rows(targeted_gtdb, meta_gtdb))
 
 # Load CheckM2 results
-checkm <- read_tsv("analyses/bacteroides_variation/genomes/checkm2/quality_report.tsv")
+checkm <- suppressMessages(read_tsv("analyses/bacteroides_variation/genomes/checkm2/quality_report.tsv"))
 
-# 
+# Compile all MAG data
 bacteroides_mag_data <- checkm %>%
   mutate(assembly_strategy = case_when(
             str_detect(Name, "bacteroides") ~ "targeted",
             str_detect(Name, "meta") ~ "meta"
-          )
+          ),
+          binning_strategy = case_when(
+            str_detect(Name, "single") ~ "single",
+            str_detect(Name, "multi") ~ "multi"
+          ),
+          sample = str_split(Name, "_", simplify = TRUE)[, 2]
         ) %>%
   left_join(full_gtdb, by = c("Name" = "user_genome")) %>%
   filter(Completeness >= 90 & Contamination <= 5 & str_detect(classification, "g__Bacteroides"))
 
+# Summarize MAG recovery by method combination
+mag_recovery_summary <- bacteroides_mag_data %>%
+  group_by(assembly_strategy, binning_strategy) %>%
+  summarise(n_mags = n(), .groups = "drop")
 
+# Barplot for number of MAGs recovered
+ggplot(mag_recovery_summary, aes(x = interaction(assembly_strategy, binning_strategy), y = n_mags)) +
+  geom_bar(stat = "identity", position = "dodge", fill = "gray70") +
+  geom_text(aes(label = n_mags), vjust = -0.5, size = 3) +
+  labs(
+    x = "Assembly and binning strategy",
+    y = "Number of NC MAGs"
+  ) +
+  custom_theme
 ```
 
+I noticed that the sets of samples and species recovered with different strategies were not overlapping, so I also compared the proportion of unique sample-species combinations recovered with each strategy:
+
+```{r}
+# Calculate percentage of recovered sample-classification combinations
+total_combinations <- bacteroides_mag_data %>%
+  distinct(sample, classification) %>%
+  nrow()
+
+percentage_recovery_summary <- bacteroides_mag_data %>%
+  group_by(assembly_strategy, binning_strategy) %>%
+  summarise(
+    recovered_combinations = n_distinct(paste(sample, classification)),
+    percentage_recovered = (recovered_combinations / total_combinations) * 100,
+    .groups = "drop"
+  )
+
+# Barplot for percentage of recovered combinations
+ggplot(percentage_recovery_summary, aes(x = interaction(assembly_strategy, binning_strategy), y = percentage_recovered)) +
+  geom_bar(stat = "identity", position = "dodge", fill = "gray70") +
+  geom_text(aes(label = sprintf("%.1f%%", percentage_recovered)), vjust = -0.5, size = 3) +
+  labs(
+    x = "Method Combination",
+    y = "Percent sample-species recovered"
+  ) +
+  custom_theme
+```
+
+Based on this, it is clear that the **best MAG recovery strategy is to assemble the full metagenome and do multi-sample binning grouping by patient**.
 
 ### Extracting 16S sequences
 

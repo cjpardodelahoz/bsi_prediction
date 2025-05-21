@@ -112,8 +112,42 @@ awk -F'\t' 'NR > 1 && $2 ~ /f__Enterococcaceae/ {print $1}' "${GTDB_FILE}" | whi
 done
 ```
 
-And then I ran CheckM:
+Then, I classified them with into the STs scheme defined by [Homan et al. 2002](https://journals.asm.org/doi/10.1128/jcm.40.6.1963-1971.2002) using the `mlst` software:
 
 ```{bash, eval=FALSE}
-sbatch code/scripts/enterococcus_diversity/enterococcus_checkm2.sh #7047406
+sbatch code/scripts/enterococcus_diversity/mlst.sh
+```
+
+I also calculated ANI between all genome pairs and dereplicated them at 98% ANI:
+
+```{bash, eval=FALSE}
+sbatch code/scripts/enterococcus_diversity/fastani.sh # 7623351
+```
+And then I ran CheckM to assess genome quality:
+
+```{bash, eval=FALSE}
+sbatch code/scripts/enterococcus_diversity/enterococcus_checkm2.sh
+```
+
+```{r}
+# Load required library and custom functions
+suppressMessages(library(tidyverse))
+source("code/rfunctions/data_helpers.r")
+
+# Load and merge GTBD results
+meta_gtdb <- suppressMessages(read_tsv("analyses/yan_sd_2022/binning/gtdb/gtdbtk.bac120.summary.tsv"))
+
+# Load CheckM2 results
+checkm <- suppressMessages(read_tsv("analyses/enterococcus_diversity/genomes/checkm2/quality_report.tsv"))
+
+# Compile MAG data
+enterococcus_mag_data <- checkm %>%
+  mutate(binning_strategy = case_when(
+            str_detect(Name, "single") ~ "single",
+            str_detect(Name, "multi") ~ "multi"
+          ),
+          sample = str_split(Name, "_", simplify = TRUE)[, 2]
+        ) %>%
+  left_join(meta_gtdb, by = c("Name" = "user_genome")) %>%
+  filter(Completeness >= 90 & Contamination <= 5 & str_detect(classification, "g__Enterococcus"))
 ```

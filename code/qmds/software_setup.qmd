@@ -52,6 +52,8 @@ conda env create -f software/conda/bowtie2.yml
 conda env create -f software/conda/checkm2.yml
 conda env create -f software/conda/gtdb.yml
 conda env create -f software/conda/dbcan.yml
+conda env create -f software/conda/strobealign.yml
+conda env create -f software/conda/mlst.yml
 ```
 
 GTDB database:
@@ -79,4 +81,14 @@ pip:
 
 ```{bash, eval=FALSE}
 pip install vamb
+```
+
+
+ggtree and alies
+
+```{r}
+if (!requireNamespace("BiocManager", quietly = TRUE))
+    install.packages("BiocManager")
+
+BiocManager::install(c("ggtree", "treeio", "ggtreeExtra"))
 ```

@@ -118,16 +118,33 @@ Then, I classified them with into the STs scheme defined by [Homan et al. 2002](
 sbatch code/scripts/enterococcus_diversity/mlst.sh
 ```
 
-I also calculated ANI between all genome pairs and dereplicated them at 98% ANI:
-
-```{bash, eval=FALSE}
-sbatch code/scripts/enterococcus_diversity/fastani.sh # 7623351
-```
 And then I ran CheckM to assess genome quality:
 
 ```{bash, eval=FALSE}
 sbatch code/scripts/enterococcus_diversity/enterococcus_checkm2.sh
+# Modify headers for dRep
+sed -i "s|Name|genome|" analyses/enterococcus_diversity/genomes/checkm2/quality_report.tsv
+sed -i "s|Completeness|completeness|" analyses/enterococcus_diversity/genomes/checkm2/quality_report.tsv
+sed -i "s|Contamination|contamination|" analyses/enterococcus_diversity/genomes/checkm2/quality_report.tsv
 ```
+
+```{r, eval=FALSE}
+suppressMessages(library(tidyverse))
+
+# Load CheckM2 quality report
+checkm_quality_report <- suppressMessages(read_tsv("analyses/enterococcus_diversity/genomes/checkm2/quality_report.tsv"))
+
+# Save the quality report as a CSV
+write_csv(checkm_quality_report, "analyses/enterococcus_diversity/genomes/checkm2/quality_report.csv")
+```
+
+I also calculated ANI between all genome pairs and dereplicated them at 98% ANI:
+
+```{bash, eval=FALSE}
+sbatch code/scripts/enterococcus_diversity/fastani.sh
+sbatch code/scripts/enterococcus_diversity/drep_98.sh
+```
+
 
 ```{r}
 # Load required library and custom functions

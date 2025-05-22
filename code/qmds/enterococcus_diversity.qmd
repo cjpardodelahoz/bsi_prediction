@@ -89,7 +89,7 @@ dominated_not_infected
 
  ## Strain-resolved genome diversity
 
- ### MAG quality filtering
+ ### MAG quality assesment and dereplication
 
  I compiled the *Enterococcus* MAGs binned as described in the [Exploring *Bacteroides* molecular variation]() section:
 
@@ -145,10 +145,24 @@ sbatch code/scripts/enterococcus_diversity/fastani.sh
 sbatch code/scripts/enterococcus_diversity/drep_98.sh
 ```
 
+### *Enterococcus* detection across metagenomic libraries
 
+I tested the detection of the NC dereplicated MAGs of X *Enterococcus* species (*Enterococcus faecium*, *Enterococcus faecalis*, ) across all metagenomic libraries. I did this by mapping the reads from all samples to these MAGs. Then, a detection in a sample will be positive if there is >50% of the MAG covered by at least one read.
+
+```{bash, eval=FALSE}
+# Copy representative dereplicated NC MAGs
+mkdir -p analyses/enterococcus_diversity/detection/ref_mags
+cp analyses/enterococcus_diversity/genomes/mags/s_1042II_39_meta_vamb_multi.fna analyses/enterococcus_diversity/detection/ref_mags
+
+# Run detection script
+sbatch code/scripts/enterococcus_diversity/enterococcus_detection.sh #8068650
+```
+
+### 
 ```{r}
 # Load required library and custom functions
 suppressMessages(library(tidyverse))
+suppressMessages(library(ape))
 source("code/rfunctions/data_helpers.r")
 
 # Load and merge GTBD results
@@ -156,6 +170,16 @@ meta_gtdb <- suppressMessages(read_tsv("analyses/yan_sd_2022/binning/gtdb/gtdbtk
 
 # Load CheckM2 results
 checkm <- suppressMessages(read_tsv("analyses/enterococcus_diversity/genomes/checkm2/quality_report.tsv"))
+
+# Load MLST results
+mlst_2002 <- read.csv("analyses/enterococcus_diversity/genomes/mlst/mlst_2002.csv", header = FALSE, fill = TRUE)
+colnames(mlst_2002) <- c("genome_path",
+                          "scheme",
+                          "ST",
+                          paste0("allele_", seq(1:7))
+                          )
+mlst_2002 <- mlst_2002 %>%
+  mutate(genome = tools::file_path_sans_ext(basename(genome_path)))
 
 # Compile MAG data
 enterococcus_mag_data <- checkm %>%
@@ -166,5 +190,60 @@ enterococcus_mag_data <- checkm %>%
           sample = str_split(Name, "_", simplify = TRUE)[, 2]
         ) %>%
   left_join(meta_gtdb, by = c("Name" = "user_genome")) %>%
-  filter(Completeness >= 90 & Contamination <= 5 & str_detect(classification, "g__Enterococcus"))
+  left_join(mlst_2002, by = c("Name" = "genome")) %>%
+  mutate(species = str_remove(classification, ".*s__")) %>%
+  filter(Completeness >= 70 & Contamination <= 5 & str_detect(classification, "g__Enterococcus"))
+
+# Load FastANI results
+fastani <- read_tsv("analyses/enterococcus_diversity/genomes/fastani/fastani_results.tsv", col_names = FALSE)
+colnames(fastani) <- c("genome1", "genome2", "ANI", "aligned_fragments", "total_fragments")
+fastani <- fastani %>% 
+  mutate(alignment_fraction = aligned_fragments/total_fragments,
+        genome1 =  tools::file_path_sans_ext(basename(genome1)),
+        genome2 =  tools::file_path_sans_ext(basename(genome2)))
+
+        # Filter genomes for Enterococcus_B faecium
+        faecium_genomes <- enterococcus_mag_data %>%
+          filter(species == "Enterococcus_B faecium" & binning_strategy == "multi") %>%
+          pull(Name)
+
+        # Subset FastANI results for these genomes
+        faecium_fastani <- fastani %>%
+          filter(genome1 %in% faecium_genomes & genome2 %in% faecium_genomes) %>%
+          select(genome1, genome2, ANI)
+
+        # Convert ANI to a distance matrix
+        faecium_dist_matrix <- faecium_fastani %>%
+          pivot_wider(names_from = genome2, values_from = ANI, values_fill = 0) %>%
+          column_to_rownames("genome1") %>%
+          as.matrix()
+
+        # Convert ANI to distance (1 - ANI/100)
+        faecium_dist_matrix <- 100 - faecium_dist_matrix
+
+        # Create a phylogenetic tree using hierarchical clustering with the average method
+        faecium_hclust <- hclust(as.dist(faecium_dist_matrix), method = "complete")
+        diag(faecium_dist_matrix) <- 0
+
+        # Map ST values to genome names and assign colors
+        st_colors <- enterococcus_mag_data %>%
+          filter(Name %in% faecium_genomes) %>%
+          select(Name, ST) %>%
+          mutate(ST = factor(ST)) %>%
+          mutate(color = scales::hue_pal()(nlevels(ST))[as.numeric(ST)]) %>%
+          select(Name, color) %>%
+          deframe()
+
+        # Convert hclust object to a phylogenetic tree
+        faecium_hclust_tree <- as.phylo(faecium_hclust)
+
+        # Plot the tree with base R and color tip labels by ST
+        plot(faecium_hclust_tree, tip.color = tip_colors_hclust, cex = 0.8)
+        # Add a scale on the x-axis that connects branch lengths to ANI distances
+        axisPhylo()
+
+        ggtree(faecium_tree) +
+        geom_tiplab() +
+        geom_treescale()
+        write.tree(faecium_tree, "tree.tree")
 ```

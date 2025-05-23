@@ -87,9 +87,11 @@ dominated_infected
 dominated_not_infected
 ```
 
- ## Strain-resolved genome diversity
+## Linking 16S ASVs to metagenome
 
- ### MAG quality assesment and dereplication
+## *Enterococcus* genomic diversity
+
+### MAG quality assesment and dereplication
 
  I compiled the *Enterococcus* MAGs binned as described in the [Exploring *Bacteroides* molecular variation]() section:
 
@@ -110,12 +112,6 @@ awk -F'\t' 'NR > 1 && $2 ~ /f__Enterococcaceae/ {print $1}' "${GTDB_FILE}" | whi
     echo "File ${full_path} not found, skipping..."
   fi
 done
-```
-
-Then, I classified them with into the STs scheme defined by [Homan et al. 2002](https://journals.asm.org/doi/10.1128/jcm.40.6.1963-1971.2002) using the `mlst` software:
-
-```{bash, eval=FALSE}
-sbatch code/scripts/enterococcus_diversity/mlst.sh
 ```
 
 And then I ran CheckM to assess genome quality:
@@ -145,24 +141,15 @@ sbatch code/scripts/enterococcus_diversity/fastani.sh
 sbatch code/scripts/enterococcus_diversity/drep_98.sh
 ```
 
-### *Enterococcus* detection across metagenomic libraries
+### Core-genome diversity summary
 
-I tested the detection of the NC dereplicated MAGs of X *Enterococcus* species (*Enterococcus faecium*, *Enterococcus faecalis*, ) across all metagenomic libraries. I did this by mapping the reads from all samples to these MAGs. Then, a detection in a sample will be positive if there is >50% of the MAG covered by at least one read.
+I classified the MAGs into the STs scheme defined by [Homan et al. 2002](https://journals.asm.org/doi/10.1128/jcm.40.6.1963-1971.2002) using the `mlst` software:
 
 ```{bash, eval=FALSE}
-# Copy representative dereplicated NC MAGs
-mkdir -p analyses/enterococcus_diversity/detection/ref_mags
-cp analyses/enterococcus_diversity/genomes/drep/dereplicated_genomes/*.fna analyses/enterococcus_diversity/detection/ref_mags
-
-# Run detection script
-# Submit the first job and capture its job ID
-jid=$(sbatch --array=1-1 code/scripts/enterococcus_diversity/enterococcus_detection.sh | awk '{print $4}') #8080556
-
-# Submit the rest, dependent on the first finishing
-sbatch --dependency=afterok:$jid --array=2-395%15 code/scripts/enterococcus_diversity/enterococcus_detection.sh #8080600
+sbatch code/scripts/enterococcus_diversity/mlst.sh
 ```
 
-### 
+
 ```{r}
 # Load required library and custom functions
 suppressMessages(library(tidyverse))
@@ -251,3 +238,40 @@ fastani <- fastani %>%
         geom_treescale()
         write.tree(faecium_tree, "tree.tree")
 ```
+
+## Timing of *Enterococcus* colonization
+
+### *Enterococcus* detection across metagenomic libraries
+
+I tested the detection of the NC dereplicated MAGs of X *Enterococcus* species (*Enterococcus faecium*, *Enterococcus faecalis*, ) across all metagenomic libraries. I did this by mapping the reads from all samples to these MAGs. Then, a detection in a sample will be positive if there is >50% of the MAG covered by at least one read.
+
+```{bash, eval=FALSE}
+# Copy representative dereplicated NC MAGs
+mkdir -p analyses/enterococcus_diversity/detection/ref_mags
+cp analyses/enterococcus_diversity/genomes/drep/dereplicated_genomes/*.fna analyses/enterococcus_diversity/detection/ref_mags
+
+# Run detection script
+# Submit the first job and capture its job ID
+jid=$(sbatch --array=1-1 code/scripts/enterococcus_diversity/enterococcus_detection.sh | awk '{print $4}') #8244928
+
+# Submit the rest, dependent on the first finishing
+sbatch --dependency=afterok:$jid --array=2-395%15 code/scripts/enterococcus_diversity/enterococcus_detection.sh #8246800
+```
+
+### *Enterococcus* detection with 16S
+
+## Strain diversity and dynamics
+
+I dereplicated all the MAGs recovered from the full metagenomes (both from single and multi strategies) at 98% ANI to generate a reference library to call variants for the strain analyses. I considered only MAGs with >50% completeness and <15% contamination:
+
+```{bash, eval=FALSE}
+sbatch code/scripts/enterococcus_diversity/drep_all_mags_98.sh #8285225
+```
+
+### Within-patient strain diveristy and dynamics
+
+```{bash, eval=FALSE}
+jid=$(sbatch --array=1-1 code/scripts/enterococcus_diversity/floria_phasing.sh | awk '{print $4}') #8354300
+```
+
+### Within-patient strain sharing

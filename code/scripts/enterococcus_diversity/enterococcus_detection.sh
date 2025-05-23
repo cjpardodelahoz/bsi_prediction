@@ -1,6 +1,6 @@
 #!/bin/bash
 
-#SBATCH --array=1  # Adjust the range based on the number of libraries
+#SBATCH --array=1-395%15  # Adjust the range based on the number of libraries
 #SBATCH --output=log/enterococcus_diversity/enterococcus_detection_%A_%a.out
 #SBATCH --error=log/enterococcus_diversity/enterococcus_detection_%A_%a.err
 #SBATCH --time=48:00:00

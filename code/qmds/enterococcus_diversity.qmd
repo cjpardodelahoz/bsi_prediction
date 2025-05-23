@@ -152,10 +152,14 @@ I tested the detection of the NC dereplicated MAGs of X *Enterococcus* species (
 ```{bash, eval=FALSE}
 # Copy representative dereplicated NC MAGs
 mkdir -p analyses/enterococcus_diversity/detection/ref_mags
-cp analyses/enterococcus_diversity/genomes/mags/s_1042II_39_meta_vamb_multi.fna analyses/enterococcus_diversity/detection/ref_mags
+cp analyses/enterococcus_diversity/genomes/drep/dereplicated_genomes/*.fna analyses/enterococcus_diversity/detection/ref_mags
 
 # Run detection script
-sbatch code/scripts/enterococcus_diversity/enterococcus_detection.sh #8068650
+# Submit the first job and capture its job ID
+jid=$(sbatch --array=1-1 code/scripts/enterococcus_diversity/enterococcus_detection.sh | awk '{print $4}') #8080556
+
+# Submit the rest, dependent on the first finishing
+sbatch --dependency=afterok:$jid --array=2-395%15 code/scripts/enterococcus_diversity/enterococcus_detection.sh #8080600
 ```
 
 ### 

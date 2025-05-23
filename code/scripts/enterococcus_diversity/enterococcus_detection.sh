@@ -8,9 +8,8 @@
 #SBATCH --mem=64G
 #SBATCH --partition=cpu
 
-# Activate the conda environment with Bowtie2 and bedtools installed
+# Prepare to activate conda environments
 source $(conda info --base)/etc/profile.d/conda.sh
-conda activate bowtie2
 
 # Define paths
 READS_DIR="data/reads/yan_sd_2022"
@@ -39,12 +38,12 @@ for MAG_FILE in ${MAGS_DIR}/*.fna; do
     MAG_NAME=$(basename ${MAG_FILE} .fna)
 
     # Step 1: Build Bowtie2 index for the MAG (only needs to be done once per MAG)
+    conda activate bowtie2
     if [[ ! -f ${MAG_FILE}.1.bt2 ]]; then
         bowtie2-build ${MAG_FILE} ${MAG_FILE}
     fi
 
     # Step 2: Map reads to the MAG
-    conda activate bowtie2
     bowtie2 -x ${MAG_FILE} -1 ${R1} -2 ${R2} -p 16 | samtools view -bS - | samtools sort -o ${COVERAGE_DIR}/${sample_name}_${MAG_NAME}.sorted.bam
     samtools index ${COVERAGE_DIR}/${sample_name}_${MAG_NAME}.sorted.bam
 

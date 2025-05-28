@@ -175,15 +175,15 @@ mlst_2002 <- mlst_2002 %>%
 # Compile MAG data
 enterococcus_mag_data <- checkm %>%
   mutate(binning_strategy = case_when(
-            str_detect(Name, "single") ~ "single",
-            str_detect(Name, "multi") ~ "multi"
+            str_detect(genome, "single") ~ "single",
+            str_detect(genome, "multi") ~ "multi"
           ),
-          sample = str_split(Name, "_", simplify = TRUE)[, 2]
+          sample = str_split(genome, "_", simplify = TRUE)[, 2]
         ) %>%
-  left_join(meta_gtdb, by = c("Name" = "user_genome")) %>%
-  left_join(mlst_2002, by = c("Name" = "genome")) %>%
+  left_join(meta_gtdb, by = c("genome" = "user_genome")) %>%
+  left_join(mlst_2002, by = c("genome" = "genome")) %>%
   mutate(species = str_remove(classification, ".*s__")) %>%
-  filter(Completeness >= 70 & Contamination <= 5 & str_detect(classification, "g__Enterococcus"))
+  filter(completeness >= 70 & contamination <= 5 & str_detect(classification, "g__Enterococcus"))
 
 # Load FastANI results
 fastani <- read_tsv("analyses/enterococcus_diversity/genomes/fastani/fastani_results.tsv", col_names = FALSE)
@@ -265,13 +265,72 @@ sbatch --dependency=afterok:$jid --array=2-395%15 code/scripts/enterococcus_dive
 I dereplicated all the MAGs recovered from the full metagenomes (both from single and multi strategies) at 98% ANI to generate a reference library to call variants for the strain analyses. I considered only MAGs with >50% completeness and <15% contamination:
 
 ```{bash, eval=FALSE}
-sbatch code/scripts/enterococcus_diversity/drep_all_mags_98.sh #8285225
+sbatch code/scripts/enterococcus_diversity/drep_all_mags_98.sh
+sbatch code/scripts/enterococcus_diversity/fastani_all_mags.sh
+```
+
+Then, I merged the dereplicated genomes into a single fasta to use as a library for competitive mapping in the strain analyses:
+
+```{bash, eval=FALSE}
+mkdir -p analyses/enterococcus_diversity/strains/ref_contigs
+cat analyses/yan_sd_2022/binning/drep98/dereplicated_genomes/*.fna > analyses/enterococcus_diversity/strains/ref_contigs/ref_contigs.fna
 ```
 
 ### Within-patient strain diveristy and dynamics
 
 ```{bash, eval=FALSE}
-jid=$(sbatch --array=1-1 code/scripts/enterococcus_diversity/floria_phasing.sh | awk '{print $4}') #8354300
+jid=$(sbatch --array=1-1 code/scripts/enterococcus_diversity/floria_phasing.sh | awk '{print $4}') #8849741
+
+sbatch --dependency=afterok:$jid --array=2-216%15 code/scripts/enterococcus_diversity/floria_phasing.sh #8849753
 ```
 
-### Within-patient strain sharing
+### Between-patient strain sharing
+
+```{bash, eval=FALSE}
+grep '^>' analyses/enterococcus_diversity/genomes/drep/dereplicated_genomes/s_1044K_1_meta_vamb_single.fna | sed 's/^>//' > analyses/enterococcus_diversity/strains/ref_contigs/ref_contig_list.txt
+
+jid=$(sbatch --array=1-1 code/scripts/enterococcus_diversity/instrain_profile.sh| awk '{print $4}') #9010835
+
+sbatch --dependency=afterok:$jid --array=2-216%15 code/scripts/enterococcus_diversity/instrain_profile.sh #9015558
+
+sbatch code/scripts/enterococcus_diversity/instrain_compare.sh
+```
+
+## Pangenome dynamics
+
+I selected a set 168 *E. facecium* MAGs which have >95% completeness and <5% contamination for the pangenome analyses. I considered MAGs recovered with both the single and the multi binning strategies. When both strategies recovered a MAG from the same sample, I kept the one with the highest completeness value. I confirmed that there were no cases where I recovered two *E. facecium* MAGs from the sample.
+
+```{r, eval=FALSE}
+# Load required library and custom functions
+suppressMessages(library(tidyverse))
+
+# Load and merge GTBD results
+meta_gtdb <- suppressMessages(read_tsv("analyses/yan_sd_2022/binning/gtdb/gtdbtk.bac120.summary.tsv"))
+
+# Load CheckM2 results
+checkm <- suppressMessages(read_tsv("analyses/enterococcus_diversity/genomes/checkm2/quality_report.tsv"))
+
+# Compile E. faecium NC MAG data
+efaecium_mag_data <- checkm %>%
+  mutate(binning_strategy = case_when(
+            str_detect(genome, "single") ~ "single",
+            str_detect(genome, "multi") ~ "multi"
+          ),
+          sample = str_split(genome, "_", simplify = TRUE)[, 2]
+        ) %>%
+  left_join(meta_gtdb, by = c("genome" = "user_genome")) %>%
+  mutate(species = str_remove(classification, ".*s__")) %>%
+  filter(completeness >= 95 & contamination <= 5 & str_detect(species, "Enterococcus_B faecium")) %>%
+  group_by(species, sample) %>%
+    slice_max(order_by = completeness, n = 1, with_ties = FALSE) %>%
+    ungroup()
+
+# Print list of paths to NC MAGs for pangenome analysis
+write(paste0("analyses/enterococcus_diversity/genomes/mags/", efaecium_mag_data$genome, ".fna"), "analyses/enterococcus_diversity/genomes/efaecium_nc.txt")
+```
+
+Then, I inferred the gene annotations and pnagenome for the 168 *E. faecium* MAGs using ggCaller:
+
+```{bash, eval=FALSE}
+sbatch code/scripts/enterococcus_diversity/ggcaller.sh #9392154
+```

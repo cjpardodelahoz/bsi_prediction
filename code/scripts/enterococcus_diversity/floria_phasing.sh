@@ -1,6 +1,6 @@
 #!/bin/bash
 
-#SBATCH --array=1-395%10  # Adjust the range based on the number of samples
+#SBATCH --array=1-216%15  # This is the number of samples with E. faecium detection
 #SBATCH --output=log/enterococcus_diversity/floria_phasing_%A_%a.out
 #SBATCH --error=log/enterococcus_diversity/floria_phasing_%A_%a.err
 #SBATCH --time=48:00:00
@@ -15,14 +15,13 @@ source $(conda info --base)/etc/profile.d/conda.sh
 READS_DIR="data/reads/yan_sd_2022"
 REF_DIR="analyses/enterococcus_diversity/strains/floria"
 OUTPUT_DIR="analyses/enterococcus_diversity/strains/floria"
-#SAMPLE_NAME=$(ls ${READS_DIR} | sed -n ${SLURM_ARRAY_TASK_ID}p)
-SAMPLE_NAME="s_1042AA"
+SAMPLES_WITH_EFAECIUM=$(awk -F'\t' '$2 == "s_1044K_1_meta_vamb_single" && $4 == "Positive" {print $1}' analyses/enterococcus_diversity/detection/detection_results.tsv)
+SAMPLE_NAME=$(echo ${SAMPLES_WITH_EFAECIUM} | cut -d " " -f ${SLURM_ARRAY_TASK_ID})
 
 # Input files
 R1="${READS_DIR}/${SAMPLE_NAME}/${SAMPLE_NAME}_R1_all.fastq.gz"
 R2="${READS_DIR}/${SAMPLE_NAME}/${SAMPLE_NAME}_R2_all.fastq.gz"
-#REF_FASTA="analyses/enterococcus_diversity/strains/ref_contigs/ref_contigs.fna"
-REF_FASTA="analyses/enterococcus_diversity/strains/ref_contigs/s_1042AA_1_meta_vamb_single.fna"
+REF_FASTA="analyses/enterococcus_diversity/strains/ref_contigs/ref_contigs.fna"
 
 # Output files
 BAM_FILE="${OUTPUT_DIR}/${SAMPLE_NAME}/mapped_reads/${SAMPLE_NAME}.sorted.bam"
@@ -30,6 +29,9 @@ VCF_FILE="${OUTPUT_DIR}/${SAMPLE_NAME}/variants/${SAMPLE_NAME}.vcf"
 
 # Floria output path
 FLORIA_OUTPUT="${OUTPUT_DIR}/${SAMPLE_NAME}/floria_output"
+
+# E. faecium reference contigs
+REF_CONTIGS=$(grep '^>' analyses/enterococcus_diversity/genomes/drep/dereplicated_genomes/s_1044K_1_meta_vamb_single.fna | sed 's/^>//' | tr '\n' ' ')
 
 # Create output directories
 mkdir -p ${OUTPUT_DIR}/${SAMPLE_NAME}/mapped_reads
@@ -52,7 +54,7 @@ samtools index ${BAM_FILE}
 
 # Step 4: Call variants using FreeBayes
 conda activate floria
-freebayes -f ${REF_FASTA} -F 0.01 -C 1 -–pooled-continuous --bam ${BAM_FILE} > ${VCF_FILE}
+freebayes -f ${REF_FASTA} -F 0.01 -C 1 --pooled-continuous --bam ${BAM_FILE} > ${VCF_FILE}
 
 # Step 5: Run floria
 floria -b ${BAM_FILE} \
@@ -60,8 +62,8 @@ floria -b ${BAM_FILE} \
     -o ${FLORIA_OUTPUT} \
     -t 16 \
     -r ${REF_FASTA} \
-    --contigs NODE_1895_length_12639_cov_3.067124
+    --contigs ${REF_CONTIGS}
 
 # Step 6: Clean up
-#rm ${BAM_FILE}
-#rm ${BAM_FILE}.bai
+rm ${BAM_FILE}
+rm ${BAM_FILE}.bai

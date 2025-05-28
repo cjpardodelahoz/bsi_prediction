@@ -2,7 +2,7 @@
 
 #SBATCH --output=log/enterococcus_diversity/drep_all_mags_98.out
 #SBATCH --error=log/enterococcus_diversity/drep_all_mags_98.err
-#SBATCH --time=48:00:00
+#SBATCH --time=168:00:00
 #SBATCH --cpus-per-task=16
 #SBATCH --mem=64G
 #SBATCH --partition=cpu
@@ -20,7 +20,7 @@ mkdir -p ${OUTPUT_DIR}
 
 # Run dRep with a 98% ANI threshold and precomputed CheckM2 results
 dRep dereplicate ${OUTPUT_DIR} \
-    -g ${MAGS_DIR}/*.fna \
+    #-g ${MAGS_DIR}/*.fna \
     -p 16 \
     --S_algorithm ANImf \
     --completeness 50 \

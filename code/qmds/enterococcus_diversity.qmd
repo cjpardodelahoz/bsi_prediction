@@ -7,6 +7,8 @@ format:
     code-summary: "Show the code"
 ---
 
+Potential talk title: Tracking down *Enterococcus* gut colonization with strain-resolved metagenomics
+
 This is an initial exploration of the dynamics of *Enteroccocus* diversity in the HCT patient population. I have the following goals:
 
  - Stratify patients with *Enterococcus* dominations between those who did and did not get *Enterococcus* infections.
@@ -21,7 +23,7 @@ This is an initial exploration of the dynamics of *Enteroccocus* diversity in th
  It is already
 
 ```{r}
- # Load required libraries and functions
+# Load required libraries and functions
 suppressMessages(library(tidyverse))
 source("code/rfunctions/data_helpers.r")
 
@@ -89,13 +91,103 @@ dominated_not_infected
 
 ## Linking 16S ASVs to metagenome
 
+I previously compiled the 16S sequences from the metagenomes while studying *Bacteroides* diveristy. Using the same Kraken results, I extracted the *Enterococcus* 16S sequences:
+
+```{bash, eval=FALSE}
+sbatch code/scripts/enterococcus_diversity/extract_enterococcus_16S.sh
+```
+
+Then I printed the *Enterococcus* 16S ASVs to a fasta:
+
+```{r, eval=FALSE}
+enterococcus_asvs <- read_csv("data/tblASVtaxonomy_silva132_v4v5_filter.csv") %>%
+  filter(Genus == "Enterococcus") %>%
+  select(ASV, Sequence)
+
+# Save Bacteroides sequences in FASTA format
+writeLines(
+  paste0(">", enterococcus_asvs$ASV, "\n", enterococcus_asvs$Sequence),
+  "analyses/enterococcus_diversity/16S/compiled/enterococcus_asvs.fasta"
+)
+```
+
+After that, I did a BLASTn search of *Enterococcus* 16S ASVs against a database of the full length 16S extracted from the metagenomes:
+
+```{bash, eval=FALSE}
+sbatch code/scripts/enterococcus_diversity/blast_enterococcus_asvs_to_meta.sh
+```
+
+I also did a BLASTn search of the *Enterococcus* 16S sequences against the NCBI database:
+
+```{bash, eval=FALSE}
+sbatch code/scripts/enterococcus_diversity/blast_enterococcus_16S_ncbi.sh
+```
+
+The BLAST search only returned the NCBI TaxIDs of the hits, so I retrieved the correspoding species names:
+
+```{bash, eval=FALSE}
+# NCBI CLI
+conda activate ncbi
+
+# Input file with TaxIDs (one per line)
+TAXID_FILE="analyses/enterococcus_diversity/16S/compiled/taxid_hits.txt"
+
+# Output file for results
+OUTPUT_FILE="analyses/enterococcus_diversity/16S/compiled/taxid_species.tsv"
+
+# Get TaxIDs
+cat analyses/enterococcus_diversity/16S/compiled/enterococcus_ncbi_blast.txt | tail -n +2 | cut -d $'\t'  -f 3 | sort | uniq > ${TAXID_FILE}
+
+# Initialize the output file
+> $OUTPUT_FILE
+
+# Loop through each TaxID in the file
+while read -r TAXID; do
+    # Run the datasets command for the current TaxID
+    datasets summary taxonomy taxon $TAXID | \
+    grep -o '"species":{"id":[0-9]*,"name":"[^"]*"}' | \
+    sed -E "s/.*\"id\":[0-9]+,\"name\":\"([^\"]+)\".*/${TAXID}\t\1/" >> $OUTPUT_FILE
+done < $TAXID_FILE
+```
+
+```{r}
+# Load the BLAST results and species ids
+meta_to_ncbi_blast <- read_tsv("analyses/enterococcus_diversity/16S/compiled/enterococcus_ncbi_blast.txt")
+asv_to_meta_blast <- read_tsv("analyses/enterococcus_diversity/16S/compiled/enterococcus_asv_to_meta_blast.txt", col_names = F)
+colnames(asv_to_meta_blast) <- c("asv", "hit", "pident", "qlen", "slen", "alignment_length", "mismatches", "gaps")
+taxid_species <- read_tsv("analyses/enterococcus_diversity/16S/compiled/taxid_species.tsv", col_names = F)
+
+# Wrangle NCBI blast results to get IDs for the metagenomic 16S seqs
+meta_to_ncbi_curated_blast <- meta_to_ncbi_blast %>%
+  left_join(taxid_species, by = c("sscinames" = "X1")) %>%
+  rename(species = X2) %>%
+  group_by(qseqid) %>%
+  slice_max(order_by = pident, with_ties = FALSE, n = 1) %>%
+  ungroup() %>%
+  mutate(method = str_extract(qseqid, "meta|targeted"))
+
+# Add meta IDs to ASV blast results
+asv_to_meta_map <- asv_to_meta_blast %>%
+  left_join(select(meta_to_ncbi_curated_blast, qseqid, species, sacc, method), by = c(hit = "qseqid")) %>%
+  group_by(asv) %>%
+  slice_max(order_by = pident, with_ties = TRUE, n = 1)
+
+asv_species_summary <- asv_to_meta_map %>%
+  group_by(asv, mismatches) %>%
+  summarise(
+    n_species = n_distinct(species), # Count distinct species
+    species = paste(unique(species), collapse = ", ") # Concatenate distinct species names
+  ) %>%
+  ungroup()
+```
+
 ## *Enterococcus* genomic diversity
 
 ### MAG quality assesment and dereplication
 
  I compiled the *Enterococcus* MAGs binned as described in the [Exploring *Bacteroides* molecular variation]() section:
 
- ```{bash, eval=FALSE}
+```{bash, eval=FALSE}
 GTDB_FILE="analyses/yan_sd_2022/binning/gtdb/gtdbtk.bac120.summary.tsv"
 BIN_DIR="analyses/yan_sd_2022/binning/compiled"
 OUTPUT_DIR="analyses/enterococcus_diversity/genomes/mags"
@@ -118,20 +210,6 @@ And then I ran CheckM to assess genome quality:
 
 ```{bash, eval=FALSE}
 sbatch code/scripts/enterococcus_diversity/enterococcus_checkm2.sh
-# Modify headers for dRep
-sed -i "s|Name|genome|" analyses/enterococcus_diversity/genomes/checkm2/quality_report.tsv
-sed -i "s|Completeness|completeness|" analyses/enterococcus_diversity/genomes/checkm2/quality_report.tsv
-sed -i "s|Contamination|contamination|" analyses/enterococcus_diversity/genomes/checkm2/quality_report.tsv
-```
-
-```{r, eval=FALSE}
-suppressMessages(library(tidyverse))
-
-# Load CheckM2 quality report
-checkm_quality_report <- suppressMessages(read_tsv("analyses/enterococcus_diversity/genomes/checkm2/quality_report.tsv"))
-
-# Save the quality report as a CSV
-write_csv(checkm_quality_report, "analyses/enterococcus_diversity/genomes/checkm2/quality_report.csv")
 ```
 
 I also calculated ANI between all genome pairs and dereplicated them at 98% ANI:
@@ -150,11 +228,10 @@ sbatch code/scripts/enterococcus_diversity/mlst.sh
 ```
 
 
-```{r}
-# Load required library and custom functions
-suppressMessages(library(tidyverse))
+```{r,}
+# Load ape and ggtree
 suppressMessages(library(ape))
-source("code/rfunctions/data_helpers.r")
+suppressMessages(library(ggtree))
 
 # Load and merge GTBD results
 meta_gtdb <- suppressMessages(read_tsv("analyses/yan_sd_2022/binning/gtdb/gtdbtk.bac120.summary.tsv"))
@@ -175,15 +252,15 @@ mlst_2002 <- mlst_2002 %>%
 # Compile MAG data
 enterococcus_mag_data <- checkm %>%
   mutate(binning_strategy = case_when(
-            str_detect(genome, "single") ~ "single",
-            str_detect(genome, "multi") ~ "multi"
+            str_detect(Name, "single") ~ "single",
+            str_detect(Name, "multi") ~ "multi"
           ),
-          sample = str_split(genome, "_", simplify = TRUE)[, 2]
+          sample = str_split(Name, "_", simplify = TRUE)[, 2]
         ) %>%
-  left_join(meta_gtdb, by = c("genome" = "user_genome")) %>%
-  left_join(mlst_2002, by = c("genome" = "genome")) %>%
+  left_join(meta_gtdb, by = c("Name" = "user_genome")) %>%
+  left_join(mlst_2002, by = c("Name" = "genome")) %>%
   mutate(species = str_remove(classification, ".*s__")) %>%
-  filter(completeness >= 70 & contamination <= 5 & str_detect(classification, "g__Enterococcus"))
+  filter(Completeness >= 70 & Contamination <= 5 & str_detect(classification, "g__Enterococcus"))
 
 # Load FastANI results
 fastani <- read_tsv("analyses/enterococcus_diversity/genomes/fastani/fastani_results.tsv", col_names = FALSE)
@@ -229,17 +306,104 @@ fastani <- fastani %>%
         faecium_hclust_tree <- as.phylo(faecium_hclust)
 
         # Plot the tree with base R and color tip labels by ST
-        plot(faecium_hclust_tree, tip.color = tip_colors_hclust, cex = 0.8)
-        # Add a scale on the x-axis that connects branch lengths to ANI distances
-        axisPhylo()
-
-        ggtree(faecium_tree) +
-        geom_tiplab() +
-        geom_treescale()
-        write.tree(faecium_tree, "tree.tree")
+        plot(faecium_hclust_tree, tip.color = st_colors, cex = 0.8)
 ```
 
-## Timing of *Enterococcus* colonization
+### Phylogeny with Lebreton et al 2013 reference
+
+I compiled the genome assembly accessions from the [Lebreton et al 2013](https://journals.asm.org/doi/full/10.1128/mbio.00534-13) paper and downloaded them from NCBI:
+
+```{bash, eval=FALSE}
+# NCBI toolkit
+conda activate ncbi
+
+# Directory for NCBI genomes
+LEBRETON_DIR="analyses/enterococcus_diversity/genomes/lebreton_2013"
+mkdir -p ${LEBRETON_DIR}
+
+# List of accessions from lebreton
+cat data/lebreton_et_al_2013_genomes.csv | cut -d "," -f 12 | tail -n +2 > ${LEBRETON_DIR}/accessions.txt
+
+# Download genomes from NCBI
+datasets download genome accession --inputfile ${LEBRETON_DIR}/accessions.txt --dehydrated --filename ${LEBRETON_DIR}/genome.zip
+unzip ${LEBRETON_DIR}/genome.zip -d ${LEBRETON_DIR}
+datasets rehydrate --directory ${LEBRETON_DIR}
+```
+
+I compiled and renamed the genome files so they would correspond witht he assembly accession:
+
+```{bash, eval=FLASE}
+# Create directory for all .fna files
+LEBRETON_FASTA_DIR_TMP="analyses/enterococcus_diversity/genomes/lebreton_2013/ncbi_dataset/tmp"
+LEBRETON_FASTA_DIR="analyses/enterococcus_diversity/genomes/lebreton_2013/fasta"
+mkdir -p ${LEBRETON_FASTA_DIR} ${LEBRETON_FASTA_DIR_TMP}
+
+# Find and move all .fna files to the new directory
+find ${LEBRETON_DIR}/ncbi_dataset/data/ -not -path "${LEBRETON_FASTA_DIR_TMP}/*" -type f -name "*.fna" -exec mv {} ${LEBRETON_FASTA_DIR_TMP} \;
+
+# Copy and rename files
+for file in ${LEBRETON_FASTA_DIR_TMP}/*; do
+  base=$(basename "$file")
+  new_name="${base%%.*}.fna"
+  mv "$file" "$LEBRETON_FASTA_DIR/$new_name"
+done
+```
+
+I selected a set 168 *E. facecium* MAGs which have >95% completeness and <5% contamination for the phylognetic analyses. I considered MAGs recovered with both the single and the multi binning strategies. When both strategies recovered a MAG from the same sample, I kept the one with the highest completeness value. I confirmed that there were no cases where I recovered two *E. facecium* MAGs from the sample.
+
+```{r, eval=FALSE}
+# Load required library and custom functions
+suppressMessages(library(tidyverse))
+
+# Load and merge GTBD results
+meta_gtdb <- suppressMessages(read_tsv("analyses/yan_sd_2022/binning/gtdb/gtdbtk.bac120.summary.tsv"))
+
+# Load CheckM2 results
+checkm <- suppressMessages(read_tsv("analyses/enterococcus_diversity/genomes/checkm2/quality_report.tsv"))
+
+# Compile E. faecium NC MAG data
+efaecium_mag_data <- checkm %>%
+  mutate(binning_strategy = case_when(
+            str_detect(Name, "single") ~ "single",
+            str_detect(Name, "multi") ~ "multi"
+          ),
+          sample = str_split(Name, "_", simplify = TRUE)[, 2]
+        ) %>%
+  left_join(meta_gtdb, by = c("Name" = "user_genome")) %>%
+  mutate(species = str_remove(classification, ".*s__")) %>%
+  filter(Completeness >= 95 & Contamination <= 5 & str_detect(species, "Enterococcus_B faecium")) %>%
+  group_by(species, sample) %>%
+    slice_max(order_by = Completeness, n = 1, with_ties = FALSE) %>%
+    ungroup()
+
+# Print list of paths to NC MAGs for pangenome analysis
+write(paste0("analyses/enterococcus_diversity/genomes/mags/", efaecium_mag_data$genome, ".fna"), "analyses/enterococcus_diversity/genomes/efaecium_nc.txt")
+```
+
+I generated I file with the list of MAGs and reference genomes for the phylogeny:
+
+```{bash, eval=FALSE}
+# Paths
+NC_MAGS="analyses/enterococcus_diversity/genomes/efaecium_nc.txt"
+PHYLO_DIR="analyses/enterococcus_diversity/phylogenetics/mags_plus_lebreton"
+
+# File with paths to Lebreton genomes
+ls -d $LEBRETON_FASTA_DIR/*.fna > ${LEBRETON_DIR}/genome_paths.txt
+
+# Driectory for phylogenetic analyses
+mkdir -p ${PHYLO_DIR}
+
+# List of genomes included in phylogenetic analyes
+cat ${NC_MAGS} ${LEBRETON_DIR}/genome_paths.txt > ${PHYLO_DIR}/genome_list.txt
+```
+
+And then I ran ggCaller to get a core genome alignment:
+
+```{bash, eval=FALSE}
+sbatch code/scripts/enterococcus_diversity/ggcaller_align.sh
+```
+
+## Timing of *Enterococcus* detection
 
 ### *Enterococcus* detection across metagenomic libraries
 
@@ -258,9 +422,91 @@ jid=$(sbatch --array=1-1 code/scripts/enterococcus_diversity/enterococcus_detect
 sbatch --dependency=afterok:$jid --array=2-395%15 code/scripts/enterococcus_diversity/enterococcus_detection.sh #8246800
 ```
 
+```{r}
+# Load metagenomic detection results
+meta_detection <- suppressMessages(read_tsv("analyses/enterococcus_diversity/detection/detection_results.tsv")) %>%
+  left_join(select(enterococcus_mag_data, Name, species), by = c("mag" = "Name"))
+```
+
 ### *Enterococcus* detection with 16S
 
+```{r}
+#
+tblrel_genus_meta <- prep_taxa_counts("genus")
+
+# Assign sample indices for each patient based on Timepoint
+tblrel_genus_meta <- tblrel_genus_meta %>%
+  group_by(PatientID) %>%
+  arrange(Timepoint) %>%
+  mutate(sample_index = row_number()) %>%
+  ungroup()
+
+# Identify the first sample where Enterococcus was detected for each patient
+first_detection <- tblrel_genus_meta %>%
+  filter(Enterococcus_abund > 0.001) %>%
+  group_by(PatientID) %>%
+  slice_min(order_by = sample_index, n = 1) %>%
+  ungroup()
+
+# Stratify by infection status
+detection_summary <- first_detection %>%
+  mutate(infection_status = ifelse(Enterococcus_infection, "Infected", "Not Infected")) %>%
+  count(sample_index, infection_status, name = "num_patients")
+
+# Create the bar plot
+ggplot(detection_summary, aes(x = sample_index, y = num_patients, fill = infection_status)) +
+  geom_bar(stat = "identity", position = "stack") +
+  labs(
+    x = "Sample index (ordered by Timepoint)",
+    y = "Number of patients",
+    fill = "E. faecium infection status"
+  ) +
+  scale_fill_manual(
+    values = c("Infected" = "#0D7E2B", "Not Infected" = "gray75")
+  ) +
+  custom_theme
+```
+
+```{r, eval=FALSE}
+tblrel_asv_meta <- prep_taxa_counts("asv")
+
+asv_taxonomy <- read_csv("data/tblASVtaxonomy_silva132_v4v5_filter.csv")
+
+# Merge ASV taxonomy with relative abundance data
+tblrel_asv_meta <- tblrel_asv_meta %>%
+  pivot_longer(cols = starts_with("ASV_"), names_to = "ASV", values_to = "abundance") %>%
+  mutate(ASV = str_remove(ASV, "_abund")) %>%
+  left_join(asv_taxonomy, by = "ASV")
+
+# Filter for Enterococcus ASVs
+enterococcus_asvs <- tblrel_asv_meta %>%
+  filter(Genus == "Enterococcus")
+
+# Identify the first sample for each patient
+first_sample_asvs <- enterococcus_asvs %>%
+  group_by(PatientID) %>%
+  slice_min(order_by = Timepoint, n = 1) %>%
+  ungroup() %>%
+  select(PatientID, first_detected_asv = ASV)
+
+# Identify the dominating ASV for each patient
+dominating_asvs <- enterococcus_asvs %>%
+  group_by(PatientID, ASV) %>%
+  summarize(max_abundance = max(abundance, na.rm = TRUE), .groups = "drop") %>%
+  filter(max_abundance > 0.3) %>%
+  slice_max(order_by = max_abundance, n = 1, with_ties = FALSE) %>%
+  select(PatientID, dominating_asv = ASV)
+
+# Combine the results into a single table
+result_table <- first_sample_asvs %>%
+  left_join(dominating_asvs, by = "PatientID")
+
+result_table
+```
+
 ## Strain diversity and dynamics
+
+### Metagenomic strain inference
 
 I dereplicated all the MAGs recovered from the full metagenomes (both from single and multi strategies) at 98% ANI to generate a reference library to call variants for the strain analyses. I considered only MAGs with >50% completeness and <15% contamination:
 
@@ -276,24 +522,321 @@ mkdir -p analyses/enterococcus_diversity/strains/ref_contigs
 cat analyses/yan_sd_2022/binning/drep98/dereplicated_genomes/*.fna > analyses/enterococcus_diversity/strains/ref_contigs/ref_contigs.fna
 ```
 
-### Within-patient strain diveristy and dynamics
+Using the *E. faecium* genome (`s_1044K_1_meta_vamb_single`) I ran both the floria pipeline for contig strain phasing:
 
 ```{bash, eval=FALSE}
-jid=$(sbatch --array=1-1 code/scripts/enterococcus_diversity/floria_phasing.sh | awk '{print $4}') #8849741
+jid=$(sbatch --array=1-1 code/scripts/enterococcus_diversity/floria_phasing.sh | awk '{print $4}')
 
-sbatch --dependency=afterok:$jid --array=2-216%15 code/scripts/enterococcus_diversity/floria_phasing.sh #8849753
+sbatch --dependency=afterok:$jid --array=2-216%15 code/scripts/enterococcus_diversity/floria_phasing.sh
 ```
 
-### Between-patient strain sharing
+And the inStrain pipeline for popANI and microdiversity calculations:
 
 ```{bash, eval=FALSE}
 grep '^>' analyses/enterococcus_diversity/genomes/drep/dereplicated_genomes/s_1044K_1_meta_vamb_single.fna | sed 's/^>//' > analyses/enterococcus_diversity/strains/ref_contigs/ref_contig_list.txt
 
-jid=$(sbatch --array=1-1 code/scripts/enterococcus_diversity/instrain_profile.sh| awk '{print $4}') #9010835
+jid=$(sbatch --array=1-1 code/scripts/enterococcus_diversity/instrain_profile.sh| awk '{print $4}')
 
-sbatch --dependency=afterok:$jid --array=2-216%15 code/scripts/enterococcus_diversity/instrain_profile.sh #9015558
+sbatch --dependency=afterok:$jid --array=2-216%15 code/scripts/enterococcus_diversity/instrain_profile.sh
 
 sbatch code/scripts/enterococcus_diversity/instrain_compare.sh
+```
+
+### Between-patient strain sharing
+
+I wanted to visualize the relationship between strain sharing (popANI) and the time between stool sample collection from different patients to determine if strain sharing is more common when samples were taken closely in time. For this, I first needed to ggenerate a table of the time bewteen sample collection for the stool samples that were shotgun sequenced:
+
+```{r}
+# Load the sample metadata
+meta_tblASVsamples <- suppressMessages(
+  read_csv("data/tblASVsamples.csv",
+    col_types = cols(
+      .default = col_guess(),
+      Pool = col_character()
+    )) %>%
+  filter(!is.na(AccessionShotgun)) %>%
+  mutate(SampleID = paste0("s_", SampleID)) %>%
+  distinct(AccessionShotgun, .keep_all = TRUE)
+)
+
+# Load the patient dictionary
+patient_dictionary <- suppressMessages(
+  read_csv("data/tCastoriPatientDictionaryWithDatesAndOtherStudiesPatientId.txt")
+)
+
+# Define column types for dictionary
+patient_dictionary <- patient_dictionary %>%
+  mutate(
+    cmicId = as.character(cmicId),
+    referenceDate = as.Date(referenceDate, format = "%Y-%m-%d")
+  )
+
+# Merge the sample metadata with the patient dictionary to get reference dates
+meta_tblASVsamples_with_dates <- meta_tblASVsamples %>%
+    left_join(patient_dictionary, by = c("PatientID" = "cmicId")) %>%
+    mutate(
+        collectionDate = referenceDate + days(Timepoint) # Convert patient-specific timepoints to actual dates
+    )
+
+# Generate all pairwise combinations of samples from different patients
+time_difference <- meta_tblASVsamples_with_dates %>%
+    select(SampleID, PatientID, collectionDate) %>%
+    rename(sample1 = SampleID, patient1 = PatientID, date1 = collectionDate) %>%
+    full_join(
+        meta_tblASVsamples_with_dates %>%
+            select(SampleID, PatientID, collectionDate) %>%
+            rename(sample2 = SampleID, patient2 = PatientID, date2 = collectionDate),
+        by = character()
+    ) %>%
+    #filter(patient1 != patient2) %>% # Keep only pairs from different patients
+    mutate(
+        # Ensure consistent ordering of sample1 and sample2
+        #sample1 = if_else(sample1 < sample2, sample1, sample2),
+        #sample2 = if_else(sample1 < sample2, sample2, sample1),
+        time_between_sample_collection = abs(as.numeric(difftime(date1, date2, units = "days")))
+    ) %>%
+    #distinct(sample1, sample2, time_between_sample_collection, .keep_all = TRUE) %>% # Remove duplicate pairs
+    select(sample1, sample2, time_between_sample_collection, patient1, patient2)
+
+time_difference
+```
+
+Then, I was able to visualize the results from the inStrain comparisons in the context of the sample collection timeline:
+
+```{r}
+# Load inStrain comparison table
+instrain_compare <- read_tsv("analyses/enterococcus_diversity/strains/instrain_compare/output/instrain_compare_genomeWide_compare.tsv") %>%
+  mutate(sample1 = str_remove(name1, ".sorted.bam"),
+        sample2 = str_remove(name2, ".sorted.bam"),
+        popANI = popANI*100) %>%
+  left_join(time_difference, by = c("sample1", "sample2")) %>%
+  mutate(patient1_ord = if_else(patient1 < patient2, patient1, patient2),
+        patient2_ord = if_else(patient1 < patient2, patient2, patient1)) %>%
+  filter(percent_compared >= 0.85)
+
+# Identify patients with NA values in instrain_compare
+na_patients <- instrain_compare %>%
+  filter(is.na(patient1) | is.na(patient2)) %>%
+  select(sample1, sample2, patient1, patient2) %>%
+  distinct()
+
+# Comparisons between samples from the same patients
+instrain_compare_within <- instrain_compare %>%
+  filter(patient1_ord == patient2_ord) %>%
+  mutate(log10_popANI = log10(100 - popANI))
+
+# Comparisons between samples from different patients
+instrain_compare_between <- instrain_compare %>%
+  filter(patient1_ord != patient2_ord) %>%
+  mutate(log10_popANI = log10(100 - popANI))
+
+# Comparisons with the highest popANI for each pair of patients
+instrain_compare_max_popANI <- instrain_compare_between %>%
+  group_by(patient1_ord, patient2_ord) %>%
+  slice_max(order_by = popANI, n = 1, with_ties = FALSE) %>%
+  ungroup()
+
+# Plot for all between-patient comparisons 
+within_patient_pairs_plot <- ggplot(instrain_compare_within, aes(x = time_between_sample_collection, y = log10_popANI)) +
+        geom_point(alpha = 0.6) +
+        geom_hline(yintercept = log10(100 - 99.999), color = "red", linetype = "dashed") +
+        scale_x_continuous(breaks = scales::pretty_breaks(n = 6)) +
+        scale_y_continuous(
+          breaks = log10(c(1, 0.1, 0.01, 0.001, 0.0001, 0.00001)),
+          labels = c("99", "99.9", "99.99", "99.999", "99.9999", "99.99999"),
+          trans = "reverse"
+        ) +
+        labs(
+          x = "Time between sample collection (days)",
+          y = "E. faecium popANI"
+        ) +
+        custom_theme
+
+# Plot for all between-patient comparisons 
+between_patient_pairs_plot <- ggplot(instrain_compare_between, aes(x = time_between_sample_collection, y = log10_popANI)) +
+        geom_point(alpha = 0.6) +
+        geom_hline(yintercept = log10(100 - 99.999), color = "red", linetype = "dashed") +
+        scale_x_continuous(breaks = scales::pretty_breaks(n = 6)) +
+        scale_y_continuous(
+          breaks = log10(c(1, 0.1, 0.01, 0.001, 0.0001, 0.00001)),
+          labels = c("99", "99.9", "99.99", "99.999", "99.9999", "99.99999"),
+          trans = "reverse"
+        ) +
+        labs(
+          x = "Time between sample collection (days)",
+          y = "E. faecium popANI"
+        ) +
+        custom_theme
+
+# Plot with the highest popANI for each pair of patients 
+between_patient_max_plot <- ggplot(instrain_compare_max_popANI, aes(x = time_between_sample_collection, y = log10(100 - popANI))) +
+          geom_point(alpha = 0.6) +
+          geom_hline(yintercept = log10(100 - 99.999), color = "red", linetype = "dashed") +
+          scale_x_continuous(breaks = scales::pretty_breaks(n = 6)) +
+          scale_y_continuous(
+            breaks = log10(c(1, 0.1, 0.01, 0.001, 0.0001, 0.00001)),
+            labels = c("99", "99.9", "99.99", "99.999", "99.9999", "99.99999"),
+            trans = "reverse"
+          ) +
+          labs(
+            x = "Time between sample collection (days)",
+            y = "max. E. faecium popANI between patients"
+          ) +
+          custom_theme
+
+# Print the plots
+within_patient_pairs_plot
+between_patient_pairs_plot
+between_patient_max_plot
+```
+
+These results indicate that there are only 10 pairs of patients of patients that share the same strain of *Enterococcus faecium* (i.e., popANI >99.999). I examined these 10 pairs:
+
+```{r}
+instrain_compare_max_popANI %>% filter(popANI >= 99.999) %>%
+  select(sample1, sample2, patient1, patient2, popANI, conANI, time_between_sample_collection)
+```
+
+And it turns out that the 10 pairs correspond to 5 patients which all share the same strain:
+
+```{r}
+instrain_compare_max_popANI %>% 
+  filter(popANI >= 99.999) %>%
+  select(patient1, patient2, popANI) %>%
+  pivot_wider(names_from = patient2, values_from = popANI, values_fill = NA, id_cols = patient1) %>%
+  mutate(across(everything(), ~ coalesce(.x, NA))) %>%
+  ungroup()
+```
+
+The dataset I analyzed includes a total of 18 patients:
+
+```{r}
+c(instrain_compare$patient1 %>% unique(), instrain_compare$patient2 %>% unique()) %>% unique()
+```
+
+### Within-patient strain diveristy and dynamics
+
+I wanted to understand in greater detail why some within-patient comparisons seemed to not share strains, so I examined the data for each patient separately:
+
+```{r}
+# Patients with efacium
+patients_meta <- c(instrain_compare$patient1 %>% unique(), instrain_compare$patient2 %>% unique()) %>% unique()
+
+# Get the list of samples present in instrain_compare
+samples_in_instrain <- unique(c(instrain_compare$sample1, instrain_compare$sample2))
+
+# Filter meta_tblASVsamples to include only samples present in instrain_compare
+meta_tblASVsamples_filtered <- meta_tblASVsamples %>%
+  filter(SampleID %in% samples_in_instrain)
+
+# Loop through each patient in patients_meta
+plots <- list()  # Store plots for each patient
+for (patient in patients_meta) {
+
+# Filter samples for the current patient
+patient_samples <- meta_tblASVsamples_filtered %>%
+    filter(PatientID == patient) %>%
+    arrange(DayRelativeToNearestHCT) 
+
+  # Initialize a data frame to store results
+  patient_plot_data <- tibble(
+    sample = character(),
+    DayRelativeToNearestHCT = numeric(),
+    popANI = numeric()
+  )
+
+  # Proceed only if there are at least 3 samples
+  if (nrow(patient_samples) >= 3) {
+    # Iterate through samples to calculate popANI with the previous sample
+    for (i in 2:nrow(patient_samples)) {
+      current_sample <- patient_samples$SampleID[i]
+      previous_sample <- patient_samples$SampleID[i - 1]
+
+      # Find the popANI between the current and previous samples
+      popANI_value <- instrain_compare %>%
+        filter(
+          (sample1 == current_sample & sample2 == previous_sample) |
+          (sample2 == current_sample & sample1 == previous_sample)
+        ) %>%
+        pull(popANI)
+
+      # Add the result to the data frame
+      if (length(popANI_value) > 0) {  # Ensure popANI exists for the pair
+        patient_plot_data <- patient_plot_data %>%
+          add_row(
+            sample = current_sample,
+            DayRelativeToNearestHCT = patient_samples$DayRelativeToNearestHCT[i],
+            popANI = popANI_value
+          )
+      }
+    }
+
+    # Create the plot for the current patient
+    p <- ggplot(patient_plot_data, aes(x = DayRelativeToNearestHCT, y = log10(100 - popANI))) +
+      geom_point(alpha = 0.6) +
+      geom_line(alpha = 0.6) +
+      geom_hline(yintercept = log10(100 - 99.999), color = "red", linetype = "dashed") +
+      scale_x_continuous(breaks = scales::pretty_breaks(n = 6)) +
+      scale_y_continuous(
+        limits = c(log10(100 - 99.900), log10(100 - 99.999994)),
+        breaks = log10(c(1, 0.1, 0.01, 0.001, 0.0001, 0.00001)),
+        labels = c("99", "99.9", "99.99", "99.999", "99.9999", "99.99999"),
+        trans = "reverse"
+      ) +
+      labs(
+        title = paste("Patient", patient),
+        x = "Day Relative to Nearest HCT",
+        y = "E. faecium popANI to previous sample"
+      ) +
+      custom_theme
+
+    # Store the plot in the list
+    plots[[patient]] <- p
+  }
+}
+
+# Print all plots
+for (patient in names(plots)) {
+  print(plots[[patient]])
+}
+```
+
+```{r}
+# Prepare asv-level counts and metadata for plotting
+tblrel_asv_meta <- prep_taxa_counts("asv")
+
+# Load taxonomy data with colors and filter to tax level
+taxlevel_color <- read_csv("data/tblASVtaxonomy_silva132_v4v5_filter.csv") %>%
+  select(ASV, HexColor, ColorOrder) %>%
+  distinct(ASV, .keep_all = TRUE)
+
+# Filter data for PatientID 1511 and time points between -5 and 20
+patient_1511_data <- tblrel_asv_meta %>%
+  filter(PatientID == "FMT.0097", DayRelativeToNearestHCT >= -5, DayRelativeToNearestHCT <= 20) %>%
+  select(DayRelativeToNearestHCT, ends_with("_abund")) %>%
+  pivot_longer(
+    cols = ends_with("_abund"),
+    names_to = "Taxa",
+    values_to = "RelativeAbundance"
+  ) %>%
+  mutate(Taxa = str_remove(Taxa, "_abund"))
+
+# Merge patient data with taxonomy colors and order by ColorOrder
+patient_1511_data <- patient_1511_data %>%
+  left_join(taxlevel_color, by = c("Taxa" = "ASV")) %>%
+  arrange(ColorOrder)
+
+# Plot microbial composition for PatientID 1511 with assigned colors and order
+ggplot(patient_1511_data, aes(x = DayRelativeToNearestHCT, y = RelativeAbundance, fill = reorder(Taxa, -ColorOrder))) +
+  geom_bar(stat = "identity", position = "stack") +
+  scale_fill_manual(values = setNames(patient_1511_data$HexColor, patient_1511_data$Taxa)) +
+  labs(
+    title = "Microbial Composition of Patient FMT.0097",
+    x = "Days Relative to Nearest HCT",
+    y = "Relative Abundance"
+  ) +
+  custom_theme +
+  theme(legend.position = "none")
 ```
 
 ## Pangenome dynamics
@@ -313,16 +856,16 @@ checkm <- suppressMessages(read_tsv("analyses/enterococcus_diversity/genomes/che
 # Compile E. faecium NC MAG data
 efaecium_mag_data <- checkm %>%
   mutate(binning_strategy = case_when(
-            str_detect(genome, "single") ~ "single",
-            str_detect(genome, "multi") ~ "multi"
+            str_detect(Name, "single") ~ "single",
+            str_detect(Name, "multi") ~ "multi"
           ),
-          sample = str_split(genome, "_", simplify = TRUE)[, 2]
+          sample = str_split(Name, "_", simplify = TRUE)[, 2]
         ) %>%
-  left_join(meta_gtdb, by = c("genome" = "user_genome")) %>%
+  left_join(meta_gtdb, by = c("Name" = "user_genome")) %>%
   mutate(species = str_remove(classification, ".*s__")) %>%
-  filter(completeness >= 95 & contamination <= 5 & str_detect(species, "Enterococcus_B faecium")) %>%
+  filter(Completeness >= 95 & Contamination <= 5 & str_detect(species, "Enterococcus_B faecium")) %>%
   group_by(species, sample) %>%
-    slice_max(order_by = completeness, n = 1, with_ties = FALSE) %>%
+    slice_max(order_by = Completeness, n = 1, with_ties = FALSE) %>%
     ungroup()
 
 # Print list of paths to NC MAGs for pangenome analysis
@@ -333,4 +876,69 @@ Then, I inferred the gene annotations and pnagenome for the 168 *E. faecium* MAG
 
 ```{bash, eval=FALSE}
 sbatch code/scripts/enterococcus_diversity/ggcaller.sh #9392154
+```
+
+```{r}
+pangenome <- read_tsv("analyses/enterococcus_diversity/pangenome/ggcaller/gene_presence_absence.Rtab")
+
+# Load required libraries
+suppressMessages(library(vegan))
+suppressMessages(library(ggplot2))
+
+# Filter pangenome data for the selected patients
+selected_patients <- c("1252", "1203", "FMT.0069", "668", "FMT.0092")
+genome_columns <- colnames(pangenome)[2:ncol(pangenome)]
+selected_genomes <- genome_columns[grepl(paste(selected_patients, collapse = "|"), genome_columns)]
+
+# Subset the pangenome matrix for the selected genomes
+pangenome_subset <- pangenome %>%
+  select(Gene, all_of(selected_genomes)) %>%
+  column_to_rownames("Gene") %>%
+  as.matrix()
+
+# Perform UMAP dimensionality reduction manually
+# Calculate pairwise distances between genomes
+distance_matrix <- dist(t(pangenome_subset))
+
+# Initialize random coordinates for UMAP
+set.seed(42)
+n_genomes <- ncol(pangenome_subset)
+umap_coords <- matrix(runif(n_genomes * 2, min = -1, max = 1), ncol = 2)
+
+# Perform iterative optimization for UMAP
+learning_rate <- 0.1
+n_iterations <- 500
+for (i in 1:n_iterations) {
+  for (j in 1:n_genomes) {
+    for (k in 1:n_genomes) {
+      if (j != k) {
+        # Compute attraction or repulsion based on distance
+        dist_original <- as.matrix(distance_matrix)[j, k]
+        dist_embedded <- sqrt(sum((umap_coords[j, ] - umap_coords[k, ])^2))
+        gradient <- (dist_embedded - dist_original) * (umap_coords[j, ] - umap_coords[k, ]) / (dist_embedded + 1e-6)
+        umap_coords[j, ] <- umap_coords[j, ] - learning_rate * gradient
+      }
+    }
+  }
+}
+
+# Prepare data for plotting
+umap_data <- as.data.frame(umap_coords)
+colnames(umap_data) <- c("UMAP1", "UMAP2")
+umap_data$Genome <- colnames(pangenome_subset)
+umap_data$Patient <- sapply(umap_data$Genome, function(x) {
+  patient <- selected_patients[sapply(selected_patients, function(p) grepl(p, x))]
+  if (length(patient) > 0) patient[1] else NA
+})
+
+# Plot the UMAP
+ggplot(umap_data, aes(x = UMAP1, y = UMAP2, color = Patient)) +
+  geom_point(size = 5, alpha = 0.8) +
+  labs(
+    title = "UMAP of Genomes by Patient",
+    x = "UMAP Dimension 1",
+    y = "UMAP Dimension 2",
+    color = "Patient"
+  ) +
+  custom_theme
 ```

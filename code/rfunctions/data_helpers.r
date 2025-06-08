@@ -76,9 +76,7 @@ prep_taxa_counts <- function(taxlevel) {
 
 
 # Function to plot microbial composition timeline for a given PatientID
-plot_patient_timeline_asv <- function(patient_id) {
-    # Prepare asv-level counts and metadata for plotting
-    tblrel_asv_meta <- prep_taxa_counts("asv")
+plot_patient_timeline_asv <- function(patient_id, tblrel_asv_meta) {
     
     # Load taxonomy data with colors and filter to tax level
     taxlevel_color <- read_csv("data/tblASVtaxonomy_silva132_v4v5_filter.csv") %>%
@@ -87,12 +85,12 @@ plot_patient_timeline_asv <- function(patient_id) {
     
     # Filter data for the given PatientID and time points between -5 and 20
     patient_data <- tblrel_asv_meta %>%
-        filter(PatientID == patient_id, DayRelativeToNearestHCT >= -5, DayRelativeToNearestHCT <= 20) %>%
+        filter(PatientID == patient_id, DayRelativeToNearestHCT >= -30, DayRelativeToNearestHCT <= 100) %>%
         select(DayRelativeToNearestHCT, ends_with("_abund")) %>%
         pivot_longer(
             cols = ends_with("_abund"),
             names_to = "Taxa",
-            values_to = "RelativeAbundance"
+            values_to = "16S relative abundance"
         ) %>%
         mutate(Taxa = str_remove(Taxa, "_abund"))
     

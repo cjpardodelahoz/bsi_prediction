@@ -73,3 +73,108 @@ prep_taxa_counts <- function(taxlevel) {
     
     return(tblrel_taxlevel_meta)
 }
+
+
+# Function to plot microbial composition timeline for a given PatientID
+plot_patient_timeline_asv <- function(patient_id) {
+    # Prepare asv-level counts and metadata for plotting
+    tblrel_asv_meta <- prep_taxa_counts("asv")
+    
+    # Load taxonomy data with colors and filter to tax level
+    taxlevel_color <- read_csv("data/tblASVtaxonomy_silva132_v4v5_filter.csv") %>%
+        select(ASV, HexColor, ColorOrder) %>%
+        distinct(ASV, .keep_all = TRUE)
+    
+    # Filter data for the given PatientID and time points between -5 and 20
+    patient_data <- tblrel_asv_meta %>%
+        filter(PatientID == patient_id, DayRelativeToNearestHCT >= -5, DayRelativeToNearestHCT <= 20) %>%
+        select(DayRelativeToNearestHCT, ends_with("_abund")) %>%
+        pivot_longer(
+            cols = ends_with("_abund"),
+            names_to = "Taxa",
+            values_to = "RelativeAbundance"
+        ) %>%
+        mutate(Taxa = str_remove(Taxa, "_abund"))
+    
+    # Merge patient data with taxonomy colors and order by ColorOrder
+    patient_data <- patient_data %>%
+        left_join(taxlevel_color, by = c("Taxa" = "ASV")) %>%
+        arrange(ColorOrder)
+    
+    # Plot microbial composition for the given PatientID with assigned colors and order
+    ggplot(patient_data, aes(x = DayRelativeToNearestHCT, y = RelativeAbundance, fill = reorder(Taxa, -ColorOrder))) +
+        geom_bar(stat = "identity", position = "stack") +
+        scale_fill_manual(values = setNames(patient_data$HexColor, patient_data$Taxa)) +
+        labs(
+            title = paste("Microbial Composition of Patient", patient_id),
+            x = "Days Relative to Nearest HCT",
+            y = "Relative Abundance"
+        ) +
+        custom_theme +
+        theme(legend.position = "none")
+}
+
+# Fucntion to plot drug administration timeline for a given PatientID
+# This function assumes that tbldrug is a data frame with columns: PatientID, Factor, StartDayRelativeToNearestHCT, StopDayRelativeToNearestHCT
+plot_patient_drug_timeline <- function(patient_id, tbldrug, tblhctmeta, tblrel_asv_meta) {
+  
+  # Get the bounds of the X axis from tblrel_asv_meta
+  x_bounds <- tblrel_asv_meta %>%
+    filter(PatientID == patient_id) %>%
+    summarise(
+      min_day = min(DayRelativeToNearestHCT, na.rm = TRUE),
+      max_day = max(DayRelativeToNearestHCT, na.rm = TRUE)
+    )
+  
+  # Filter tblhctmeta to include only patients with a single HCT
+  single_hct_patients <- tblhctmeta %>%
+    group_by(PatientID) %>%
+    filter(n() == 1) %>%
+    pull(PatientID)
+  
+  # Check if the patient is in the single HCT list
+  if (!(patient_id %in% single_hct_patients)) {
+    message("The patient had multiple HCTs and cannot plot the timeline.")
+    return(NULL)
+  }
+  
+  # Filter tbldrug for the given patient
+  patient_drug_data <- tbldrug %>%
+    filter(PatientID == patient_id)
+  
+  # Check if there is ASV data for the patient
+  if (nrow(x_bounds) == 0 || is.na(x_bounds$min_day) || is.na(x_bounds$max_day)) {
+    message("No ASV data available for the patient to define X axis bounds.")
+    return(NULL)
+  }
+  
+  # Create the dumbbell plot using geom_segment
+  plot <- ggplot(patient_drug_data, aes(y = Factor, x = StartDayRelativeToNearestHCT, xend = StopDayRelativeToNearestHCT)) +
+    geom_segment(aes(x = StartDayRelativeToNearestHCT, xend = StopDayRelativeToNearestHCT, 
+                     y = Factor, yend = Factor), linewidth = 3.5, color = "gray75") +
+    scale_x_continuous(limits = c(x_bounds$min_day, x_bounds$max_day)) +
+    scale_y_discrete(drop = TRUE, limits = function(y) {
+      # Retain Y categories with data within the X axis limits
+      intersect(y, patient_drug_data %>%
+           filter(StartDayRelativeToNearestHCT <= x_bounds$max_day & StopDayRelativeToNearestHCT >= x_bounds$min_day) %>%
+           pull(Factor) %>% unique())
+    }) +
+    geom_segment(data = patient_drug_data %>%
+                   mutate(
+                     StartDayRelativeToNearestHCT = pmax(StartDayRelativeToNearestHCT, x_bounds$min_day),
+                     StopDayRelativeToNearestHCT = pmin(StopDayRelativeToNearestHCT, x_bounds$max_day)
+                   ) %>%
+                   filter(StartDayRelativeToNearestHCT <= StopDayRelativeToNearestHCT),
+                 aes(x = StartDayRelativeToNearestHCT, xend = StopDayRelativeToNearestHCT, 
+                     y = Factor, yend = Factor), linewidth = 3.5, color = "gray75") +
+    labs(
+      title = paste("Drug Administration Timeline for Patient", patient_id),
+      x = "Days Relative to Nearest HCT",
+      y = "Drug",
+      color = "Drug"
+    ) +
+    custom_theme
+  
+  return(plot)
+}
+

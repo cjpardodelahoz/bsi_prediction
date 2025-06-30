@@ -59,7 +59,11 @@ ggplot(plot_summary_data, aes(x = domination_status, y = count, fill = infection
     y = "Number of patients",
     fill = "Infection status"
   ) +
+  theme(legend.position = "top") +
   custom_theme
+
+# Save the plot
+ggsave("document/plots/enterococcus_domination_infection.pdf", height = 5, width = 3.8)
 ```
 
 Now,
@@ -87,6 +91,51 @@ dominated_not_infected <- summary_data %>%
 # Print the results
 dominated_infected
 dominated_not_infected
+```
+
+
+### Get patient MRNs to get access to additional metagenomic data
+
+I needed to give Angel the MRNs of the patients that I'm interested in to see if I can get access to aditional metagenomic data that is not yet published:
+
+```{r}
+# Load the patient dictionary
+patient_dictionary <- suppressMessages(
+  read_csv("data/tCastoriPatientDictionaryWithDatesAndOtherStudiesPatientId.txt")
+)
+
+tblhctmeta <- read_csv("data/tblhctmeta.csv")
+
+# Filter tblASVsamples for patients with no AccessionShotgun
+patients_no_shotgun <- tblASVsamples %>%
+  filter(is.na(AccessionShotgun) & between(DayRelativeToNearestHCT, -30, 30)) %>%
+  distinct(PatientID)
+
+# Keep only patients present in patient_dictionary
+patients_no_shotgun <- patients_no_shotgun %>%
+  filter(PatientID %in% patient_dictionary$cmicId)
+
+# Join with patient_dictionary to get MRN
+patients_with_mrn <- patients_no_shotgun %>%
+  left_join(patient_dictionary, by = c("PatientID" = "cmicId"))
+
+# Join with summary_data to get domination/infection status
+patients_with_status <- patients_with_mrn %>%
+  left_join(summary_data, by = "PatientID") %>%
+  mutate(
+    Priority = case_when(
+      ever_dominated == TRUE | ever_infected == TRUE ~ "high",
+      ever_dominated == FALSE & ever_infected == FALSE ~ "low",
+      TRUE ~ "high"
+    )
+  )
+
+# Select relevant columns: PatientID, MRN, Priority
+result_table <- patients_with_status %>%
+  select(PatientID, MRN, Priority)
+
+# Write the result_table to CSV
+write_csv(result_table, "document/tables/hct_patient_MRN.csv")
 ```
 
 ## Linking 16S ASVs to metagenome
@@ -219,94 +268,12 @@ sbatch code/scripts/enterococcus_diversity/fastani.sh
 sbatch code/scripts/enterococcus_diversity/drep_98.sh
 ```
 
-### Core-genome diversity summary
+### ST classification
 
 I classified the MAGs into the STs scheme defined by [Homan et al. 2002](https://journals.asm.org/doi/10.1128/jcm.40.6.1963-1971.2002) using the `mlst` software:
 
 ```{bash, eval=FALSE}
 sbatch code/scripts/enterococcus_diversity/mlst.sh
-```
-
-
-```{r,}
-# Load ape and ggtree
-suppressMessages(library(ape))
-suppressMessages(library(ggtree))
-
-# Load and merge GTBD results
-meta_gtdb <- suppressMessages(read_tsv("analyses/yan_sd_2022/binning/gtdb/gtdbtk.bac120.summary.tsv"))
-
-# Load CheckM2 results
-checkm <- suppressMessages(read_tsv("analyses/enterococcus_diversity/genomes/checkm2/quality_report.tsv"))
-
-# Load MLST results
-mlst_2002 <- read.csv("analyses/enterococcus_diversity/genomes/mlst/mlst_2002.csv", header = FALSE, fill = TRUE)
-colnames(mlst_2002) <- c("genome_path",
-                          "scheme",
-                          "ST",
-                          paste0("allele_", seq(1:7))
-                          )
-mlst_2002 <- mlst_2002 %>%
-  mutate(genome = tools::file_path_sans_ext(basename(genome_path)))
-
-# Compile MAG data
-enterococcus_mag_data <- checkm %>%
-  mutate(binning_strategy = case_when(
-            str_detect(Name, "single") ~ "single",
-            str_detect(Name, "multi") ~ "multi"
-          ),
-          sample = str_split(Name, "_", simplify = TRUE)[, 2]
-        ) %>%
-  left_join(meta_gtdb, by = c("Name" = "user_genome")) %>%
-  left_join(mlst_2002, by = c("Name" = "genome")) %>%
-  mutate(species = str_remove(classification, ".*s__")) %>%
-  filter(Completeness >= 70 & Contamination <= 5 & str_detect(classification, "g__Enterococcus"))
-
-# Load FastANI results
-fastani <- read_tsv("analyses/enterococcus_diversity/genomes/fastani/fastani_results.tsv", col_names = FALSE)
-colnames(fastani) <- c("genome1", "genome2", "ANI", "aligned_fragments", "total_fragments")
-fastani <- fastani %>% 
-  mutate(alignment_fraction = aligned_fragments/total_fragments,
-        genome1 =  tools::file_path_sans_ext(basename(genome1)),
-        genome2 =  tools::file_path_sans_ext(basename(genome2)))
-
-        # Filter genomes for Enterococcus_B faecium
-        faecium_genomes <- enterococcus_mag_data %>%
-          filter(species == "Enterococcus_B faecium" & binning_strategy == "multi") %>%
-          pull(Name)
-
-        # Subset FastANI results for these genomes
-        faecium_fastani <- fastani %>%
-          filter(genome1 %in% faecium_genomes & genome2 %in% faecium_genomes) %>%
-          select(genome1, genome2, ANI)
-
-        # Convert ANI to a distance matrix
-        faecium_dist_matrix <- faecium_fastani %>%
-          pivot_wider(names_from = genome2, values_from = ANI, values_fill = 0) %>%
-          column_to_rownames("genome1") %>%
-          as.matrix()
-
-        # Convert ANI to distance (1 - ANI/100)
-        faecium_dist_matrix <- 100 - faecium_dist_matrix
-
-        # Create a phylogenetic tree using hierarchical clustering with the average method
-        faecium_hclust <- hclust(as.dist(faecium_dist_matrix), method = "complete")
-        diag(faecium_dist_matrix) <- 0
-
-        # Map ST values to genome names and assign colors
-        st_colors <- enterococcus_mag_data %>%
-          filter(Name %in% faecium_genomes) %>%
-          select(Name, ST) %>%
-          mutate(ST = factor(ST)) %>%
-          mutate(color = scales::hue_pal()(nlevels(ST))[as.numeric(ST)]) %>%
-          select(Name, color) %>%
-          deframe()
-
-        # Convert hclust object to a phylogenetic tree
-        faecium_hclust_tree <- as.phylo(faecium_hclust)
-
-        # Plot the tree with base R and color tip labels by ST
-        plot(faecium_hclust_tree, tip.color = st_colors, cex = 0.8)
 ```
 
 ### Phylogeny with Lebreton et al 2013 reference
@@ -397,7 +364,7 @@ mkdir -p ${PHYLO_DIR}
 cat ${NC_MAGS} ${LEBRETON_DIR}/genome_paths.txt > ${PHYLO_DIR}/genome_list.txt
 ```
 
-And then I ran ggCaller to get a core genome alignment:
+And then I ran ggCaller to get a core genome alignment and an NJ tree:
 
 ```{bash, eval=FALSE}
 sbatch code/scripts/enterococcus_diversity/ggcaller_align.sh
@@ -422,7 +389,7 @@ jid=$(sbatch --array=1-1 code/scripts/enterococcus_diversity/enterococcus_detect
 sbatch --dependency=afterok:$jid --array=2-395%15 code/scripts/enterococcus_diversity/enterococcus_detection.sh #8246800
 ```
 
-```{r}
+```{r, eval=FALSE}
 # Load metagenomic detection results
 meta_detection <- suppressMessages(read_tsv("analyses/enterococcus_diversity/detection/detection_results.tsv")) %>%
   left_join(select(enterococcus_mag_data, Name, species), by = c("mag" = "Name"))
@@ -688,6 +655,9 @@ between_patient_max_plot <- ggplot(instrain_compare_max_popANI, aes(x = time_bet
 within_patient_pairs_plot
 between_patient_pairs_plot
 between_patient_max_plot
+
+# Save the plot
+ggsave(between_patient_max_plot, filename = "document/plots/between_patient_max_popani.pdf", height = 4, width = 4)
 ```
 
 These results indicate that there are only 10 pairs of patients of patients that share the same strain of *Enterococcus faecium* (i.e., popANI >99.999). I examined these 10 pairs:
@@ -730,7 +700,7 @@ meta_tblASVsamples_filtered <- meta_tblASVsamples %>%
   filter(SampleID %in% samples_in_instrain)
 
 # Loop through each patient in patients_meta
-plots <- list()  # Store plots for each patient
+popani_plots <- list()  # Store plots for each patient
 for (patient in patients_meta) {
 
 # Filter samples for the current patient
@@ -791,52 +761,14 @@ patient_samples <- meta_tblASVsamples_filtered %>%
       custom_theme
 
     # Store the plot in the list
-    plots[[patient]] <- p
+    popani_plots[[patient]] <- p
   }
 }
 
 # Print all plots
-for (patient in names(plots)) {
-  print(plots[[patient]])
+for (patient in names(popani_plots)) {
+  print(popani_plots[[patient]])
 }
-```
-
-```{r}
-# Prepare asv-level counts and metadata for plotting
-tblrel_asv_meta <- prep_taxa_counts("asv")
-
-# Load taxonomy data with colors and filter to tax level
-taxlevel_color <- read_csv("data/tblASVtaxonomy_silva132_v4v5_filter.csv") %>%
-  select(ASV, HexColor, ColorOrder) %>%
-  distinct(ASV, .keep_all = TRUE)
-
-# Filter data for PatientID 1511 and time points between -5 and 20
-patient_1511_data <- tblrel_asv_meta %>%
-  filter(PatientID == "FMT.0097", DayRelativeToNearestHCT >= -5, DayRelativeToNearestHCT <= 20) %>%
-  select(DayRelativeToNearestHCT, ends_with("_abund")) %>%
-  pivot_longer(
-    cols = ends_with("_abund"),
-    names_to = "Taxa",
-    values_to = "RelativeAbundance"
-  ) %>%
-  mutate(Taxa = str_remove(Taxa, "_abund"))
-
-# Merge patient data with taxonomy colors and order by ColorOrder
-patient_1511_data <- patient_1511_data %>%
-  left_join(taxlevel_color, by = c("Taxa" = "ASV")) %>%
-  arrange(ColorOrder)
-
-# Plot microbial composition for PatientID 1511 with assigned colors and order
-ggplot(patient_1511_data, aes(x = DayRelativeToNearestHCT, y = RelativeAbundance, fill = reorder(Taxa, -ColorOrder))) +
-  geom_bar(stat = "identity", position = "stack") +
-  scale_fill_manual(values = setNames(patient_1511_data$HexColor, patient_1511_data$Taxa)) +
-  labs(
-    title = "Microbial Composition of Patient FMT.0097",
-    x = "Days Relative to Nearest HCT",
-    y = "Relative Abundance"
-  ) +
-  custom_theme +
-  theme(legend.position = "none")
 ```
 
 ## Pangenome dynamics
@@ -883,12 +815,12 @@ pangenome <- read_tsv("analyses/enterococcus_diversity/pangenome/ggcaller/gene_p
 
 # Load required libraries
 suppressMessages(library(vegan))
-suppressMessages(library(ggplot2))
 
 # Filter pangenome data for the selected patients
 selected_patients <- c("1252", "1203", "FMT.0069", "668", "FMT.0092")
 genome_columns <- colnames(pangenome)[2:ncol(pangenome)]
-selected_genomes <- genome_columns[grepl(paste(selected_patients, collapse = "|"), genome_columns)]
+selected_genomes <- genome_columns[grepl(paste(selected_patients, collapse = "|"), genome_columns) & 
+                   !grepl("^s_668HH|^s_668LL|^s_668II|^668NN", genome_columns)]
 
 # Subset the pangenome matrix for the selected genomes
 pangenome_subset <- pangenome %>%
@@ -931,14 +863,363 @@ umap_data$Patient <- sapply(umap_data$Genome, function(x) {
   if (length(patient) > 0) patient[1] else NA
 })
 
+# Define distinct colors for the Patients
+patient_colors <- c(
+  "1252" = "#fed789",  # Light gray
+  "1203" = "#5E4B3C",  # Brown
+  "FMT.0069" = "#a4bed5",  # Taupe
+  "668" = "#7b9941",  # Beige
+  "FMT.0092" = "#476e84"  # Warm gray
+)
+
 # Plot the UMAP
 ggplot(umap_data, aes(x = UMAP1, y = UMAP2, color = Patient)) +
-  geom_point(size = 5, alpha = 0.8) +
+  geom_point(size = 3, alpha = 0.9) +
+  scale_color_manual(values = patient_colors) +
   labs(
-    title = "UMAP of Genomes by Patient",
     x = "UMAP Dimension 1",
     y = "UMAP Dimension 2",
     color = "Patient"
   ) +
   custom_theme
+
+# Save the UMAP plot
+ggsave("document/plots/pangenome_sharing_umap.pdf", width = 7, height = 7)
+```
+
+## Summary of genomic diversity for lab meeting
+
+I first compiled the metadata for the E. faecium genomes that I worked with
+
+```{r}
+# Load and merge GTBD results
+meta_gtdb <- suppressMessages(read_tsv("analyses/yan_sd_2022/binning/gtdb/gtdbtk.bac120.summary.tsv"))
+
+# Load CheckM2 results
+checkm <- suppressMessages(read_tsv("analyses/enterococcus_diversity/genomes/checkm2/quality_report.tsv"))
+
+# Load MLST results
+mlst_2002 <- read.csv("analyses/enterococcus_diversity/genomes/mlst/mlst_2002.csv", header = FALSE, fill = TRUE)
+colnames(mlst_2002) <- c("genome_path",
+                          "scheme",
+                          "ST",
+                          paste0("allele_", seq(1:7))
+                          )
+mlst_2002 <- mlst_2002 %>%
+  mutate(genome = tools::file_path_sans_ext(basename(genome_path)))
+
+# Compile MAG data
+enterococcus_mag_data <- checkm %>%
+  mutate(binning_strategy = case_when(
+            str_detect(Name, "single") ~ "single",
+            str_detect(Name, "multi") ~ "multi"
+          ),
+          sample = str_split(Name, "_", simplify = TRUE)[, 2]
+        ) %>%
+  left_join(meta_gtdb, by = c("Name" = "user_genome")) %>%
+  left_join(mlst_2002, by = c("Name" = "genome")) %>%
+  mutate(species = str_remove(classification, ".*s__")) %>%
+  filter(Completeness >= 70 & Contamination <= 5 & str_detect(classification, "g__Enterococcus"))
+
+# Load Lebreton metadata
+lebreton_metadata <- suppressMessages(
+  read_csv("data/lebreton_et_al_2013_genomes.csv") %>%
+    mutate(tiplabel = str_remove(Accession, "\\.1"))
+)
+```
+
+Then, I plotted different versions of the NJ tree to highlight:
+
+1. Main clades and and distribution of hospital-associated *E. faecium
+
+```{r}
+# Load phylogenetics packages
+suppressMessages(library(ape))
+suppressMessages(library(ggtree))
+suppressMessages(library(treeio))
+
+# Load the NJ tree
+lebreton_plus_mags_tree <- read.tree("analyses/enterococcus_diversity/phylogenetics/mags_plus_lebreton/ggcaller/core_tree_NJ.nwk")
+
+# Remove single quotation marks from tip labels
+lebreton_plus_mags_tree$tip.label <- gsub("'", "", lebreton_plus_mags_tree$tip.label)
+
+# Root the tree with Clade B
+outgroup <- lebreton_metadata %>% filter(Clade == "B") %>% pull(tiplabel)
+lebreton_plus_mags_tree <- root(lebreton_plus_mags_tree, outgroup = outgroup, resolve.root = TRUE)
+
+# MAG source metadata
+mag_source_data <- enterococcus_mag_data %>%
+  filter(Name %in% lebreton_plus_mags_tree$tip.label) %>%
+  mutate(tiplabel = Name,
+    source = "MSK") %>%
+  select(tiplabel, source)
+
+# Lebreton source metadata
+hospital_categories <- c("Hosp_Feces", "Clinical Isolate", "Hospital Surveillance", "Hospital Outbreak", "Hospital Unknown")
+lebreton_source_data <- lebreton_metadata %>%
+  mutate(source = case_when(Category %in% hospital_categories ~ "Hospital",
+                            Category == "Non-hospitalized individual" ~ "Human commensal",
+                            .default = Category)) %>%
+  select(tiplabel, source)
+
+# Compile source metadata
+source_data <- bind_rows(mag_source_data, lebreton_source_data)
+
+clade_a1_node <- MRCA(lebreton_plus_mags_tree, c("GCF_000322425", "GCF_000239095"))
+
+# Merge tree tip labels with source data
+tree_data_main <- as_tibble(lebreton_plus_mags_tree) %>%
+  left_join(source_data, by = c("label" = "tiplabel"))
+
+# Define colors and shapes for sources
+source_colors <- c(
+  "MSK" = "#f4a261",          # Warm orange
+  "Hospital" = "#e63946",     # Deep red
+  "Human commensal" = "#2a9d8f", # Teal green
+  "Animal" = "#89c2d9",       # Light blue
+  "Other" = "gray50"          # Neutral gray
+)
+source_shapes <- c("MSK" = 16, "Hospital" = 16, "Human commensal" = 16, "Animal" = 16, "Other" = 16)
+
+# Plot the tree with tip shapes and colors
+ggtree(lebreton_plus_mags_tree, layout = "circular") %<+% tree_data_main +
+  geom_tippoint(aes(color = source, shape = source), size = 3) +
+  scale_color_manual(values = source_colors) +
+  scale_shape_manual(values = source_shapes) +
+  geom_hilight(node = clade_a1_node, fill = "gray75", alpha = 0.4, to.bottom = T) +
+  geom_cladelab(node = clade_a1_node, label = "A1", barsize = 0, fontsize = 8, offset.text = 6000) +
+  geom_strip(taxa1 = "GCF_000322285", taxa2 = "GCF_000321765",
+              barsize = 2,
+              label = "A2",
+              offset = 1000,
+              offset.text = 3000,
+              fontsize = 8) +
+  geom_strip(taxa1 = "GCF_000157655", taxa2 = "GCF_000322145",
+              barsize = 2,
+              label = "B",
+              offset = 4000,
+              offset.text = 3000,
+              fontsize = 8,
+              align = F) +
+  theme(legend.position = "right")
+
+# Save the plot
+#ggsave("document/plots/lebreton_plus_mags_main.pdf")
+```
+
+2. Clade A1 highlighting the STs:
+
+```{r}
+# Clade A1 taxa
+clade_a1_tips <- c(filter(lebreton_metadata, Clade == "A1") %>% pull(tiplabel), pull(mag_source_data, tiplabel))
+
+# Prune the tree to keep only clade A1 tips
+clade_a1_tree <- keep.tip(lebreton_plus_mags_tree, clade_a1_tips)
+
+# ST data for taxa in Clade A1
+st_data <- source_data %>%
+  left_join(select(enterococcus_mag_data, Name, ST), by = c("tiplabel" = "Name"))
+
+# Join tree with data
+tree_data_st <- as_tibble(clade_a1_tree) %>%
+  left_join(st_data, by = c("label" = "tiplabel"))
+
+# Plot the tree with tip labels colored by ST to check 
+ggtree(clade_a1_tree, layout = "rectangular") %<+% tree_data_st +
+  geom_tiplab() +
+  geom_tippoint(aes(color = ST), size = 3) +
+  labs(color = "ST") +
+  theme(legend.position = "right")
+
+# 
+st_a1_tree_plot <- ggtree(clade_a1_tree, layout = "rectangular") %<+% tree_data_st +
+  geom_tippoint(aes(color = source, shape = source), size = 3) +
+  scale_color_manual(values = source_colors) +
+  scale_shape_manual(values = source_shapes) +
+  geom_strip(taxa1 = "GCF_000322345", taxa2 = "s_1203K_33_meta_vamb_multi",
+              barsize = 2,
+              label = "ST 412",
+              offset = 50,
+              offset.text = 80,
+              fontsize = 6,
+              align = F) +
+  geom_strip(taxa1 = "s_1042W_5_meta_vamb_single", taxa2 = "s_1179D_3_meta_vamb_single",
+              barsize = 2,
+              label = "ST 18",
+              offset = 300,
+              offset.text = 80,
+              fontsize = 6,
+              align = F) +
+  geom_strip(taxa1 = "s_FMT.0035K_19_meta_vamb_multi", taxa2 = "s_1179V_1_meta_vamb_single",
+              barsize = 2,
+              label = "ST 736",
+              offset = 80,
+              offset.text = 80,
+              fontsize = 6,
+              align = F) +
+  geom_strip(taxa1 = "s_1044L_1_meta_vamb_single", taxa2 = "s_1044O_1_meta_vamb_single",
+              barsize = 2,
+              label = "ST 789",
+              offset = 60,
+              offset.text = 80,
+              fontsize = 6,
+              align = F) +
+  geom_strip(taxa1 = "s_2142J_13_meta_vamb_multi", taxa2 = "s_2142K_1_meta_vamb_single",
+              barsize = 2,
+              label = "ST 80",
+              offset = 60,
+              offset.text = 80,
+              fontsize = 6,
+              align = F) +
+  geom_strip(taxa1 = "s_FMT.0064X_16805_meta_vamb_single", taxa2 = "s_668II_59_meta_vamb_multi",
+              barsize = 2,
+              label = "ST 1421",
+              offset = 60,
+              offset.text = 80,
+              fontsize = 6,
+              align = F) +
+  theme(legend.position = "none")
+
+# Save the plot
+ggsave(st_a1_tree_plot, filename = "document/plots/lebreton_plus_mags_st.pdf")
+```
+
+3. Focus on sinlge-strain patient 1105:
+
+```{r}
+# Find node for patient 1105 MAGs
+node_1105 <- MRCA(clade_a1_tree, c("s_1105F_34_meta_vamb_multi", "s_1105S_34_meta_vamb_multi"))
+
+# Plot the ST tree highlighting samples from patient 1105
+st_a1_tree_plot +
+  geom_hilight(node = node_1105, fill = "#8719e0", alpha = 0.2, to.bottom = T)
+
+# Save the plot
+ggsave("document/plots/lebreton_plus_mags_1105.pdf")
+```
+
+4. Focus on multi-strain replacement patient 1179:
+
+```{r}
+# Find nodes for patient 1179
+node_1179_18 <- MRCA(clade_a1_tree, c("s_1179B_4_meta_vamb_single", "s_1179D_3_meta_vamb_single"))
+node_1179_736 <- MRCA(clade_a1_tree, c("s_1179W_2_meta_vamb_single", "s_1179V_1_meta_vamb_single"))
+
+# Plot tree higlighting 1179 samples
+st_a1_tree_plot +
+  geom_hilight(node = node_1179_736, fill = "#8719e0", alpha = 0.2, to.bottom = F) +
+  geom_hilight(node = node_1179_18, fill = "#8719e0", alpha = 0.2, to.bottom = F)
+
+# Save the plot
+ggsave("document/plots/lebreton_plus_mags_1179.pdf", width = 6)
+```
+
+5. Focus on multi-strain coexistence in patient 1044:
+
+```{r}
+# Find nodes for patient 1179
+node_1044_80 <- MRCA(clade_a1_tree, c("s_1044L_1_meta_vamb_single", "s_1044Q_27_meta_vamb_multi"))
+node_1044_N <- MRCA(clade_a1_tree, c("s_1044J_27_meta_vamb_multi", "s_1044E_27_meta_vamb_multi"))
+
+# Plot tree higlighting 1179 samples
+st_a1_tree_plot +
+  geom_hilight(node = node_1044_80, fill = "#8719e0", alpha = 0.2, to.bottom = T) +
+  geom_hilight(node = node_1044_N, fill = "#8719e0", alpha = 0.2, to.bottom = T)
+
+# Save the plot
+ggsave("document/plots/lebreton_plus_mags_1044.pdf", width = 6)
+```
+
+5. Focus ST 42 shared by five patients:
+
+```{r}
+node_412_share <- MRCA(clade_a1_tree, c("s_1252CCC_74_meta_vamb_multi", "s_FMT.0092X_45_meta_vamb_multi"))
+
+# Plot tree higlighting ST 412 samples
+st_a1_tree_plot +
+  geom_hilight(node = node_412_share, fill = "#8719e0", alpha = 0.2, to.bottom = T)
+# Save the plot
+ggsave("document/plots/lebreton_plus_mags_412_share.pdf", width = 6)
+```
+
+```{r}
+# Load patient metadata and drug info
+suppressMessages({
+  tblrel_asv_meta <- prep_taxa_counts("asv")
+  tblhctmeta <- read_csv("data/tblhctmeta.csv")
+  tbldrug <- read_csv("data/tbldrug.csv")
+})
+
+# Plot patient ASV timelines
+plot_patient_timeline_asv("1179", tblrel_asv_meta)
+ggsave("document/plots/asv_timeline_1179.pdf", height = 4)
+plot_patient_timeline_asv("1044", tblrel_asv_meta) +
+  scale_x_continuous(breaks = scales::pretty_breaks(n = 5))
+ggsave("document/plots/asv_timeline_1044.pdf", height = 4)
+
+# Plot patient Drug timelines
+plot_patient_drug_timeline("1179", tbldrug, tblhctmeta, tblrel_asv_meta)
+ggsave("document/plots/drug_timeline_1179.pdf", height = 2.5)
+plot_patient_drug_timeline("1044", tbldrug, tblhctmeta, tblrel_asv_meta) +
+      scale_x_continuous(limits = c(-7, 18),
+                      breaks = scales::pretty_breaks(n = 5))
+ggsave("document/plots/drug_timeline_1044.pdf", height = 2.5)
+
+# Plot and save popANI timelines
+popani_plots[["1179"]]
+ggsave("document/plots/popani_timeline_1179.pdf", height = 3)
+popani_plots[["1044"]] +
+      scale_x_continuous(limits = c(-7, 18),
+                      breaks = scales::pretty_breaks(n = 5))
+ggsave("document/plots/popani_timeline_1044.pdf", height = 3)
+```
+
+## Trash
+```{r, eval=FALSE}
+# Load FastANI results
+fastani <- read_tsv("analyses/enterococcus_diversity/genomes/fastani/fastani_results.tsv", col_names = FALSE)
+colnames(fastani) <- c("genome1", "genome2", "ANI", "aligned_fragments", "total_fragments")
+fastani <- fastani %>% 
+  mutate(alignment_fraction = aligned_fragments/total_fragments,
+        genome1 =  tools::file_path_sans_ext(basename(genome1)),
+        genome2 =  tools::file_path_sans_ext(basename(genome2)))
+
+        # Filter genomes for Enterococcus_B faecium
+        faecium_genomes <- enterococcus_mag_data %>%
+          filter(species == "Enterococcus_B faecium" & binning_strategy == "multi") %>%
+          pull(Name)
+
+        # Subset FastANI results for these genomes
+        faecium_fastani <- fastani %>%
+          filter(genome1 %in% faecium_genomes & genome2 %in% faecium_genomes) %>%
+          select(genome1, genome2, ANI)
+
+        # Convert ANI to a distance matrix
+        faecium_dist_matrix <- faecium_fastani %>%
+          pivot_wider(names_from = genome2, values_from = ANI, values_fill = 0) %>%
+          column_to_rownames("genome1") %>%
+          as.matrix()
+
+        # Convert ANI to distance (1 - ANI/100)
+        faecium_dist_matrix <- 100 - faecium_dist_matrix
+
+        # Create a phylogenetic tree using hierarchical clustering with the average method
+        faecium_hclust <- hclust(as.dist(faecium_dist_matrix), method = "complete")
+        diag(faecium_dist_matrix) <- 0
+
+        # Map ST values to genome names and assign colors
+        st_colors <- enterococcus_mag_data %>%
+          filter(Name %in% faecium_genomes) %>%
+          select(Name, ST) %>%
+          mutate(ST = factor(ST)) %>%
+          mutate(color = scales::hue_pal()(nlevels(ST))[as.numeric(ST)]) %>%
+          select(Name, color) %>%
+          deframe()
+
+        # Convert hclust object to a phylogenetic tree
+        faecium_hclust_tree <- as.phylo(faecium_hclust)
+
+        # Plot the tree with base R and color tip labels by ST
+        plot(faecium_hclust_tree, tip.color = st_colors, cex = 0.8)
 ```

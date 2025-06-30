@@ -90,7 +90,7 @@ plot_patient_timeline_asv <- function(patient_id, tblrel_asv_meta) {
         pivot_longer(
             cols = ends_with("_abund"),
             names_to = "Taxa",
-            values_to = "16S relative abundance"
+            values_to = "RelativeAbundance"
         ) %>%
         mutate(Taxa = str_remove(Taxa, "_abund"))
     
@@ -106,7 +106,7 @@ plot_patient_timeline_asv <- function(patient_id, tblrel_asv_meta) {
         labs(
             title = paste("Microbial Composition of Patient", patient_id),
             x = "Days Relative to Nearest HCT",
-            y = "Relative Abundance"
+            y = "16S relative abundance"
         ) +
         custom_theme +
         theme(legend.position = "none")

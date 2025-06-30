@@ -142,6 +142,123 @@ tblabs_genus_meta %>%
 
 Absolute abundance is not as useful to examine the dynamics because there is a lot of missing data for infected patients. This is why the red lines drop to 0 in the plots. In any case, there is no indication that the dynamic pattern is different from the relative abundance based on this data.
 
+### Distribution of relative abundance in patients infected by *Enterococcus* vs *Escherichia*
+
+```{r}
+load("analyses/processed_data/tblpatientday_clinical.RData")
+
+# Filter data for samples taken between DayRelativeToNearestHCT == 0 and DayRelativeToNearestHCT == 25
+filtered_genus_meta <- tblrel_genus_meta %>%
+  filter(DayRelativeToNearestHCT >= 0, DayRelativeToNearestHCT <= 25)
+
+# Get the first infection day for Enterococcus and Escherichia for each patient
+first_infection_days <- tblpatientday_clinical %>%
+  mutate(DayRelativeToNearestHCT = as.numeric(as.character(DayRelativeToNearestHCT))) %>%
+  group_by(PatientID) %>%
+  summarise(
+    Enterococcus_infection_day = ifelse(any(Enterococcus_infection == 1), 
+                                        min(DayRelativeToNearestHCT[Enterococcus_infection == 1], na.rm = TRUE), 
+                                        NA_real_),
+    Escherichia_infection_day = ifelse(any(Escherichia_infection == 1), 
+                                       min(DayRelativeToNearestHCT[Escherichia_infection == 1], na.rm = TRUE), 
+                                       NA_real_),
+    .groups = "drop"
+  )
+
+# Merge infection days with genus metadata
+filtered_genus_meta <- filtered_genus_meta %>%
+  left_join(first_infection_days, by = "PatientID")
+
+# Filter data for each set
+enterococcus_infected <- filtered_genus_meta %>%
+  filter(!is.na(Enterococcus_infection_day), DayRelativeToNearestHCT <= Enterococcus_infection_day)
+
+enterococcus_not_infected <- filtered_genus_meta %>%
+  filter(is.na(Enterococcus_infection_day))
+
+escherichia_infected <- filtered_genus_meta %>%
+  filter(!is.na(Escherichia_infection_day), DayRelativeToNearestHCT <= Escherichia_infection_day)
+
+escherichia_not_infected <- filtered_genus_meta %>%
+  filter(is.na(Escherichia_infection_day))
+
+# Combine Enterococcus data into a single data frame for plotting
+enterococcus_combined <- bind_rows(
+  enterococcus_infected %>% mutate(Group = "Infected with Enterococcus"),
+  enterococcus_not_infected %>% mutate(Group = "Not infected with Enterococcus")
+) %>%
+  filter(`Enterococcus_abund` > 0)
+
+# Create the density plot for Enterococcus
+ggplot(enterococcus_combined, aes(x = Enterococcus_abund, fill = Group)) +
+  geom_density(alpha = 0.6, size = 0.2) +
+  scale_fill_manual(values = c(
+    "Infected with Enterococcus" = "#0D7E2B",
+    "Not infected with Enterococcus" = "gray75"
+  )) +
+  labs(
+    x = "Relative abundance of Enterococcus",
+    y = "Density",
+    fill = "Patient status"
+  ) +
+  custom_theme +
+  theme(legend.position = c(0.5, 0.8))
+
+# Save the plot
+ggsave("document/plots/rel_density_enterococcus.pdf", width = 3.6, height = 3.6)
+
+# Combine Escherichia data into a single data frame for plotting
+escherichia_combined <- bind_rows(
+  escherichia_infected %>% mutate(Group = "Infected with Escherichia"),
+  escherichia_not_infected %>% mutate(Group = "Not infected with Escherichia")
+)
+
+# Filter out zeros for Escherichia abundance
+escherichia_combined_filtered <- escherichia_combined %>%
+  filter(`Escherichia-Shigella_abund` > 0.01)
+
+# Create the density plot for Escherichia (excluding zeros)
+ggplot(escherichia_combined_filtered, aes(x = `Escherichia-Shigella_abund`, fill = Group)) +
+  geom_density(alpha = 0.6, size = 0.2) +
+  scale_fill_manual(values = c(
+    "Infected with Escherichia" = "#EE2C2C",
+    "Not infected with Escherichia" = "gray75"
+  )) +
+  labs(
+    x = "Relative abundance of Escherichia",
+    y = "Density",
+    fill = "Patient status"
+  ) +
+  custom_theme +
+  theme(legend.position = c(0.5, 0.8))
+
+# Save the plot
+ggsave("document/plots/rel_density_escherichia.pdf", width = 3.6, height = 3.6)
+```
+
+```{r}
+# Filter samples for abundance > 0.01 and days between 0 and 25
+scatter_data <- tblrel_genus_meta %>%
+  filter(
+    DayRelativeToNearestHCT >= 0, DayRelativeToNearestHCT <= 25,
+    `Escherichia-Shigella_abund` > 0.01,
+    Bacteroides_abund > 0.01
+  )
+
+# Make scatterplot stratified by Escherichia infection status
+ggplot(scatter_data, aes(x = Bacteroides_abund, y = `Escherichia-Shigella_abund`, color = Escherichia_infection)) +
+  geom_point(alpha = 0.7, size = 2) +
+  scale_color_manual(values = c(`TRUE` = "#EE2C2C", `FALSE` = "gray60")) +
+  labs(
+    x = "Relative abundance of Bacteroides",
+    y = "Relative abundance of Escherichia",
+    color = "Escherichia infection") +
+  custom_theme +
+  theme(legend.position = c(0.7, 0.8))
+
+ggsave("document/plots/rel_bacteroides_escherichia.pdf", width = 3.6, height = 3.6)
+```
+
 ### Patient-specific time series
 
 

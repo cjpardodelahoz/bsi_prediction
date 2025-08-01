@@ -195,14 +195,14 @@ tblpatientday_clinical_nm <- tblpatientday_clinical_nm %>%
 
 ### Split into training and test subsets
 
-I will split the data into training and testing subsets by sampling the patients instead of the individual data points. I will use 70% of the patients for training and 30% for testing:
+I will split the data into training and testing subsets by sampling the patients instead of the individual data points. I will use 80% of the patients for training and 20% for testing:
 
 ```{r}
 set.seed(1945) # For reproducibility
 
 # Split patients into training and testing sets
 patients_nm <- unique(tblpatientday_clinical_nm$PatientID)
-train_patients_nm <- sample(patients_nm, size = floor(0.7 * length(patients_nm)))
+train_patients_nm <- sample(patients_nm, size = floor(0.8 * length(patients_nm)))
 test_patients_nm <- setdiff(patients_nm, train_patients_nm)
 
 # Create training and testing datasets
@@ -349,4 +349,20 @@ ggplot(pr_data, aes(x = Recall, y = Precision)) +
             scale_x_continuous(limits = c(0, 1)) +
             scale_y_continuous(limits = c(0, 1)) +
             custom_theme
+```
+
+```{r}
+# Load required library
+library(pROC)
+
+# Compute ROC curve and AUC
+roc_obj <- roc(test_predictions_nm$Enterococcus_infection, test_predictions_nm$predicted_prob)
+
+# Plot ROC curve
+plot(roc_obj, col = "blue", lwd = 2, main = "ROC Curve for Enterococcus Infection Prediction")
+abline(a = 0, b = 1, lty = 2, col = "gray")
+
+# Display AUC
+auc_value <- auc(roc_obj)
+cat("AUC:", auc_value, "\n")
 ```

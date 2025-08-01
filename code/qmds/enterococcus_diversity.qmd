@@ -485,11 +485,20 @@ sbatch code/scripts/enterococcus_diversity/fastani_all_mags.sh
 Then, I merged the dereplicated genomes into a single fasta to use as a library for competitive mapping in the strain analyses:
 
 ```{bash, eval=FALSE}
+# Merge fastas from dereplicated genomes
 mkdir -p analyses/enterococcus_diversity/strains/ref_contigs
 cat analyses/yan_sd_2022/binning/drep98/dereplicated_genomes/*.fna > analyses/enterococcus_diversity/strains/ref_contigs/ref_contigs.fna
+
+# Shorten fasta headers for Prokka
+sed -i "s|_cov.*||" analyses/enterococcus_diversity/strains/ref_contigs/ref_contigs.fna
+
+# Extract contig names from the dereplicated E. faecium MAG fasta and save to a list
+grep '^>' analyses/enterococcus_diversity/genomes/drep/dereplicated_genomes/s_1044K_1_meta_vamb_single.fna | \
+  sed 's/^>//' | \
+  cut -d '_' -f '1 2 3 4' > analyses/enterococcus_diversity/strains/ref_contigs/ref_contig_list.txt
 ```
 
-Using the *E. faecium* genome `s_1044K_1_meta_vamb_single` annotated with Prokka (following nomenclature of [*E. faecium* strain DO](https://www.ncbi.nlm.nih.gov/nuccore/CP003583)), I ran both the inStrain pipeline for popANI and microdiversity calculations using the Prokka annotation following labeling :
+Run Prokka aanotation on the set of E. faecium reference contigs using the labeling from [*E. faecium* strain DO](https://www.ncbi.nlm.nih.gov/nuccore/CP003583):
 
 ```{bash, eval=FALSE}
 # Get .gbk for E. faecium do to use as reference for Prokka annotation
@@ -497,12 +506,16 @@ conda activate ncbi
 mkdir -p misc_files/entorococcus_diversity
 efetch -db nucleotide -format gbwithparts -id CP003583 > misc_files/entorococcus_diversity/efaecium_DO.gbk
 
-# Annotate E. faecium genomes with Prokka
+# Annotate E. faecium reference contigs
+sbatch code/scripts/enterococcus_diversity/prokka_ref_contigs.sh
+
+# Annotate all E. faecium MAGs with Prokka
 sbatch code/scripts/enterococcus_diversity/prokka_efaecium_nc_mags.sh
+```
 
-# Extract contig names from the dereplicated E. faecium MAG fasta and save to a list
-grep '^>' analyses/enterococcus_diversity/genomes/drep/dereplicated_genomes/s_1044K_1_meta_vamb_single.fna | sed 's/^>//' > analyses/enterococcus_diversity/strains/ref_contigs/ref_contig_list.txt
+I ran both the inStrain pipeline for popANI and microdiversity calculations using the *E. faecium* genome `s_1044K_1_meta_vamb_single` as a target and the dereplicated genomes as a reference library for competitive mapping:
 
+```{bash, eval=FALSE}
 # Submit the first inStrain profile job (for the first sample) and capture its job ID
 jid=$(sbatch --array=1-1 code/scripts/enterococcus_diversity/instrain_profile.sh | awk '{print $4}')
 
@@ -1186,6 +1199,31 @@ popani_plots[["1044"]] +
                       breaks = scales::pretty_breaks(n = 5))
 ggsave("document/plots/popani_timeline_1044.pdf", height = 3)
 ```
+
+## Beta-lactam resistance
+
+I extracted the translated sequences of *pbp5* and *psr* from the *E. faecium* MAGs from patient 1179:
+
+```{bash, eval=FALSE}
+# Directory for sequences
+OUT_SEQ_DIR="analyses/enterococcus_diversity/beta_lactam/s_1179/seqs"
+mkdir -p ${OUT_SEQ_DIR}
+
+# List all .gbk files for patient 1179
+GBK_1179=$(find analyses/enterococcus_diversity/genomes/prokka -type f -name "s_1179*.gbk")
+
+# Biopython required for my python script
+conda activate biopython
+
+# Extract the sequences
+python software/custom/extract_gene_aa.py ${GBK_1179} \
+  -g pbp5 psr \
+  -o ${OUT_SEQ_DIR} \
+  -p 1
+```
+ 
+For patient 1179, all genomes had identical PBP5 and PSR sequences with all almost all critical AAs matching the PBP5-R consensus (Pietta et al., 2014), including i466S and A485. The exception was residue V586, which matched PBP5-S.
+
 
 ## Trash
 ```{r, eval=FALSE}

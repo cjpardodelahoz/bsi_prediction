@@ -1,6 +1,6 @@
 #!/bin/bash
 
-#SBATCH --array=1-307%20  # Process 307 MAGs, with up to 20 jobs running concurrently
+#SBATCH --array=1-877%100  # Process 307 MAGs, with up to 20 jobs running concurrently
 #SBATCH --mem=16G         # Memory per task
 #SBATCH -c 4              # Number of CPU cores per task
 #SBATCH --time=24:00:00   # Maximum runtime

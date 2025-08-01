@@ -378,10 +378,12 @@ bacteroides_mag_data <- checkm %>%
             str_detect(Name, "single") ~ "single",
             str_detect(Name, "multi") ~ "multi"
           ),
-          sample = str_split(Name, "_", simplify = TRUE)[, 2]
+          sample = str_split(Name, "_", simplify = TRUE)[, 2],
         ) %>%
   left_join(full_gtdb, by = c("Name" = "user_genome")) %>%
-  filter(Completeness >= 90 & Contamination <= 5 & str_detect(classification, "g__Bacteroides"))
+  left_join(mutate(patient_samples, SampleID = str_remove(SampleID, "^s_")), by = c("sample" = "SampleID")) %>%
+  mutate(species = str_remove(classification, ".*s__")) %>%
+  filter(Completeness >= 90 & Contamination <= 5 & (str_detect(classification, "g__Bacteroides|s__Phocaeicola vulgatus")))
 
 # Summarize MAG recovery by method combination
 mag_recovery_summary <- bacteroides_mag_data %>%
@@ -420,10 +422,11 @@ ggplot(percentage_recovery_summary, aes(x = interaction(assembly_strategy, binni
   geom_bar(stat = "identity", position = "dodge", fill = "gray70") +
   geom_text(aes(label = sprintf("%.1f%%", percentage_recovered)), vjust = -0.5, size = 3) +
   labs(
-    x = "Method Combination",
-    y = "Percent sample-species recovered"
+    x = "Aseembly and read mapping strategy",
+    y = "Percent of sample-species combinations recovered"
   ) +
   custom_theme
+ggsave(filename = "document/plots/mag_recovery_comparison.pdf", width = 5, height = 6)
 ```
 
 Based on this, it is clear that the **best MAG recovery strategy is to assemble the full metagenome and do multi-sample binning grouping by patient**.
@@ -667,10 +670,79 @@ print(asv_species_summary)
 
 ## Polysaccharide degradation potential variation
 
+The goal here was to determine whether genomic potential for carbohydrate degradation was variable between species and consistent within species.
+
 ### CGC prediction
 
 I predicted CAZyme gene clusters (CGC) using the dbCAN3 annotation pipeline on the Bacteroidaceae MAGs I recovered previously:
 
 ```{bash, eval=FALSE}
-sbatch code/scripts/bacteroides_variation/bacteroides_dbcan.sh #6872575
+sbatch code/scripts/bacteroides_variation/bacteroides_dbcan.sh #16607040
+```
+
+Then, I explored how the MAGs clusterd in (i) a UMAP space by PUL content (predicted from BLAST to PUL database):
+
+```{r}
+# Find all PUL predictions files recursively
+tsv_files <- list.files(
+  path = "analyses/bacteroides_variation/cgc/dbcan",
+  pattern = "substrate_prediction.tsv",
+  recursive = TRUE,
+  full.names = TRUE
+)
+
+# Read and combine all files, adding parent directory as identifier
+pul_data <- purrr::map_dfr(tsv_files, function(f) {
+  parent_dir <- basename(dirname(f))
+  readr::read_tsv(
+    f,
+    col_types = cols(
+      .default = col_guess(),
+      bitscore = col_double(),
+      `dbCAN-sub substrate score` = col_character()
+    )
+  ) %>%
+    dplyr::mutate(mag = parent_dir)
+  }) %>%
+  filter(!is.na(PULID))
+
+# Create a binary presence/absence matrix of PULID by MAG
+pul_matrix <- pul_data %>%
+  distinct(mag, PULID) %>%
+  mutate(present = 1) %>%
+  pivot_wider(names_from = PULID, values_from = present, values_fill = 0) %>%
+  left_join(select(bacteroides_mag_data, Name, species, PatientID), by = c("mag" = "Name")) %>%
+  filter(!is.na(PatientID))
+
+  # Load required library
+  library(umap)
+
+  # Select only PUL columns for UMAP
+  pul_cols <- grep("^PUL", colnames(pul_matrix), value = TRUE)
+  pul_umap_input <- as.matrix(pul_matrix[, pul_cols])
+
+  # Run UMAP
+  set.seed(42)
+  pul_umap <- umap(pul_umap_input)
+
+  # Add UMAP coordinates to the data frame
+  pul_matrix$UMAP1 <- pul_umap$layout[, 1]
+  pul_matrix$UMAP2 <- pul_umap$layout[, 2]
+
+  # Assign a specific color to each species value
+  species_levels <- unique(pul_matrix$species)
+  # If there are more species than colors, repeat colors (or expand palette as needed)
+  species_colors <- setNames(rep(paired13, length.out = length(species_levels)), species_levels)
+
+  # Plot UMAP colored by species with explicit color assignment
+  ggplot(pul_matrix, aes(x = UMAP1, y = UMAP2, color = species)) +
+    geom_point(alpha = 0.8, size = 2) +
+    scale_color_manual(values = species_colors, breaks = species_levels) +
+    labs(
+      x = "UMAP 1",
+      y = "UMAP 2",
+      color = "Species",
+      title = "UMAP clustering of MAGs by PUL content"
+    ) +
+    custom_theme
 ```

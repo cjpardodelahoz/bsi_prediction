@@ -54,6 +54,8 @@ conda env create -f software/conda/gtdb.yml
 conda env create -f software/conda/dbcan.yml
 conda env create -f software/conda/strobealign.yml
 conda env create -f software/conda/mlst.yml
+
+conda env create -f software/conda/biopython.yml
 ```
 
 GTDB database:

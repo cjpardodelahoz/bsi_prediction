@@ -50,97 +50,54 @@ tblrel_genus_meta %>%
    color = "Escherichia infection"
       ) +
   custom_theme +
-  scale_y_continuous(limits = c(0, 1))
+  scale_y_continuous(limits = c(0, 0.25))
 
-# Plot the average relative abundance of Klebsiella over time, grouped by infection status
+# Plot the average relative abundance of Bacteroides over time, grouped by infection status -- including SEs
 tblrel_genus_meta %>%
-  filter(!is.na(DayRelativeToNearestHCT), DayRelativeToNearestHCT >= -15, DayRelativeToNearestHCT <= 30) %>%
-   group_by(DayRelativeToNearestHCT, Klebsiella_infection) %>%
-   summarise(avg_abundance = mean(Klebsiella_abund, na.rm = TRUE), .groups = "drop") %>%
-   ggplot(aes(x = DayRelativeToNearestHCT, y = avg_abundance, color = Klebsiella_infection)) +
-   geom_line(linewidth = 1) +
-   scale_color_manual(values = c(`TRUE` = "#EE2C2C", `FALSE` = "gray60")) +
-   labs(
-    title = "Average Relative Abundance of Klebsiella Over Time",
-    x = "Days Relative to Nearest HCT",
-    y = "Average relative abundance of Klebsiella over time",
-      color = "Klebsiella infection"
-      ) +
-  custom_theme +
-  scale_y_continuous(limits = c(0, 1))
-
-# Plot the average relative abundance of Bacteroides over time, grouped by infection status
-tblrel_genus_meta %>%
-  filter(!is.na(DayRelativeToNearestHCT), DayRelativeToNearestHCT >= -15, DayRelativeToNearestHCT <= 30) %>%
-  group_by(DayRelativeToNearestHCT, Klebsiella_infection) %>%
-  summarise(avg_abundance = mean(Bacteroides_abund, na.rm = TRUE), .groups = "drop") %>%
-  ggplot(aes(x = DayRelativeToNearestHCT, y = avg_abundance, color = Klebsiella_infection)) +
+  filter(!is.na(DayRelativeToNearestHCT), DayRelativeToNearestHCT >= -10, DayRelativeToNearestHCT <= 25) %>%
+  group_by(DayRelativeToNearestHCT, Escherichia_infection) %>%
+  summarise(
+    avg_abundance = mean(Bacteroides_abund, na.rm = TRUE),
+    n = sum(!is.na(Bacteroides_abund)),
+    se = ifelse(n > 1, sd(Bacteroides_abund, na.rm = TRUE) / sqrt(n), NA_real_),
+    .groups = "drop"
+  ) %>%
+  filter(!is.na(se)) %>%
+  ggplot(aes(x = DayRelativeToNearestHCT, y = avg_abundance, color = Escherichia_infection, fill = Escherichia_infection)) +
+  geom_ribbon(aes(ymin = avg_abundance - se, ymax = avg_abundance + se), alpha = 0.2, color = NA) +
   geom_line(linewidth = 1) +
   scale_color_manual(values = c(`TRUE` = "#EE2C2C", `FALSE` = "gray60")) +
+  scale_fill_manual(values = c(`TRUE` = "#EE2C2C", `FALSE` = "gray60")) +
   labs(
-   title = "Average Relative Abundance of Bacteroides Over Time",
-   x = "Days Relative to Nearest HCT",
-   y = "Average relative abundance of Bacteroides over time",
-    color = "Klebsiella infection"
-      ) +
+    title = "Average Relative Abundance of Bacteroides",
+    x = "Days Relative to Nearest HCT",
+    y = "Average relative abundance of Bacteroides over time",
+    color = "Escherichia infection",
+    fill = "Escherichia infection"
+  ) +
   custom_theme +
-  scale_y_continuous(limits = c(0, 1))
+  scale_y_continuous(limits = c(0, 0.25))
 ```
 
-There is no clear evidence that the relative abundance of *Bacteroides* is following a similar dynamic to that of *Escherichia*, or even that there is a higher relative abundance of Baceroides in patients who became infected with Escherichia. 
-
-Interestingly, there is not an increase in the relative abundance of *Klebsiella* in patients that eventually developed a *Klebsiella* infection. This is a bit counter-intuitive and I need to examine the time series for those patients more closely.
-
-### Absolute abundance dynamics of *Bacteroides* and pathogenic Proteobacteria
-
-It is possible that the link between the dynamics of *Bacteroides* and pathogenic proteobacteria is not evident when looking at relative abundance due to non-independence. So, we are going to now look at the dynamics in the subset of the samples for which we have qPCR data for 16S, which allows us to convert to absolute abundances.
+After zooming-in and looking at the variation around the average relative abundance of *Bacteroides*, there seem to be some differences in the dynamic behavior between infected and non-infected patients, although the relative abundance estimates in infected patients are very noisy. I first tested this using a linear model:
 
 ```{r}
-# Load the qpcr data
-tblqpcr <- suppressMessages(read_csv("data/tblqpcr.csv"))
+bacteroides_lm <- lm(Bacteroides_abund ~ Escherichia_infection + factor(DayRelativeToNearestHCT), data = filter(tblrel_genus_meta, between(DayRelativeToNearestHCT, -10, 25)))
+summary(bacteroides_lm)
 
-# Get table with genus absolute abundance
-tblabs_genus_meta <- tblrel_genus_meta %>%
-  filter(Sample %in% unique(tblqpcr$SampleID)) %>%
-  left_join(tblqpcr, by = c("Sample" = "SampleID")) %>%
-  mutate(across(ends_with("_abund"), ~ .x * qPCR16S))
-
-# Plot the log of absolute abundance of Escherichia over time, grouped by infection status
-tblabs_genus_meta %>%
-  filter(!is.na(DayRelativeToNearestHCT), DayRelativeToNearestHCT >= -10, DayRelativeToNearestHCT <= 30) %>%
-  group_by(DayRelativeToNearestHCT, Escherichia_infection) %>%
-  summarise(avg_abs_abundance = mean(`Escherichia-Shigella_abund`, na.rm = TRUE), .groups = "drop") %>%
-  mutate(log_avg_abs_abundance = log10(avg_abs_abundance)) %>%
-  ggplot(aes(x = DayRelativeToNearestHCT, y = log_avg_abs_abundance, color = Escherichia_infection)) +
-  geom_line(linewidth = 1) +
-  scale_color_manual(values = c(`TRUE` = "#EE2C2C", `FALSE` = "gray60")) +
-  labs(
-    title = "Log of Average Absolute Abundance of Escherichia Over Time",
-    x = "Days Relative to Nearest HCT",
-    y = "Log Average Absolute Abundance of Escherichia",
-    color = "Escherichia infection"
-    ) +
-  custom_theme
-
-# Plot the log of absolute abundance of Bacteroides over time, grouped by Escherichia infection status
-tblabs_genus_meta %>%
-  filter(!is.na(DayRelativeToNearestHCT), DayRelativeToNearestHCT >= -10, DayRelativeToNearestHCT <= 30) %>%
-  group_by(DayRelativeToNearestHCT, Escherichia_infection) %>%
-  summarise(avg_abs_abundance = mean(Bacteroides_abund, na.rm = TRUE), .groups = "drop") %>%
-  mutate(log_avg_abs_abundance = log10(avg_abs_abundance)) %>%
-  ggplot(aes(x = DayRelativeToNearestHCT, y = log_avg_abs_abundance, color = Escherichia_infection)) +
-  geom_line(linewidth = 1) +
-  scale_color_manual(values = c(`TRUE` = "#EE2C2C", `FALSE` = "gray60")) +
-  labs(
-    title = "Log of Average Absolute Abundance of Bacteroides Over Time",
-    x = "Days Relative to Nearest HCT",
-    y = "Log Average Absolute Abundance of Bacteroides",
-    color = "Escherichia infection"
-    ) +
-  custom_theme
+bacteroides_bsi_lm <- glm(Escherichia_infection ~ Bacteroides_abund + factor(DayRelativeToNearestHCT), data = filter(tblrel_genus_meta, between(DayRelativeToNearestHCT, -10, 25)), family = binomial)
+summary(bacteroides_bsi_lm)
 ```
 
-Absolute abundance is not as useful to examine the dynamics because there is a lot of missing data for infected patients. This is why the red lines drop to 0 in the plots. In any case, there is no indication that the dynamic pattern is different from the relative abundance based on this data.
+which has a significant positive coefficient. But the significance is lost once I use a linear mixed effects model to account for within-patient variation:
+
+```{r}
+library(lme4)
+bacteroides_lmm <- lmer(Escherichia_infection ~ Bacteroides_abund+ factor(DayRelativeToNearestHCT) + (1|PatientID), data = filter(tblrel_genus_meta, between(DayRelativeToNearestHCT, -10, 25)))
+summary(bacteroides_lmm)
+```
+
+This could be due to high within-patient variation relative to the effect size and low number of samples for each patient.
 
 ### Distribution of relative abundance in patients infected by *Enterococcus* vs *Escherichia*
 

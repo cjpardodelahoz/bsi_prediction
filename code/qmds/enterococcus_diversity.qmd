@@ -7,8 +7,6 @@ format:
     code-summary: "Show the code"
 ---
 
-Potential talk title: Tracking down *Enterococcus* gut colonization with strain-resolved metagenomics
-
 This is an initial exploration of the dynamics of *Enteroccocus* diversity in the HCT patient population. I have the following goals:
 
  - Stratify patients with *Enterococcus* dominations between those who did and did not get *Enterococcus* infections.
@@ -18,7 +16,7 @@ This is an initial exploration of the dynamics of *Enteroccocus* diversity in th
  - Quantify *Enterococcus* strain sharing between patients
  - Quantify *Enterococcus* strain diversity within patients and through time during dominations
 
- ## Summary of dominations and inections
+ ## Summary of dominations and infections
  
  It is already
 
@@ -91,51 +89,6 @@ dominated_not_infected <- summary_data %>%
 # Print the results
 dominated_infected
 dominated_not_infected
-```
-
-
-### Get patient MRNs to get access to additional metagenomic data
-
-I needed to give Angel the MRNs of the patients that I'm interested in to see if I can get access to aditional metagenomic data that is not yet published:
-
-```{r}
-# Load the patient dictionary
-patient_dictionary <- suppressMessages(
-  read_csv("data/tCastoriPatientDictionaryWithDatesAndOtherStudiesPatientId.txt")
-)
-
-tblhctmeta <- read_csv("data/tblhctmeta.csv")
-
-# Filter tblASVsamples for patients with no AccessionShotgun
-patients_no_shotgun <- tblASVsamples %>%
-  filter(is.na(AccessionShotgun) & between(DayRelativeToNearestHCT, -30, 30)) %>%
-  distinct(PatientID)
-
-# Keep only patients present in patient_dictionary
-patients_no_shotgun <- patients_no_shotgun %>%
-  filter(PatientID %in% patient_dictionary$cmicId)
-
-# Join with patient_dictionary to get MRN
-patients_with_mrn <- patients_no_shotgun %>%
-  left_join(patient_dictionary, by = c("PatientID" = "cmicId"))
-
-# Join with summary_data to get domination/infection status
-patients_with_status <- patients_with_mrn %>%
-  left_join(summary_data, by = "PatientID") %>%
-  mutate(
-    Priority = case_when(
-      ever_dominated == TRUE | ever_infected == TRUE ~ "high",
-      ever_dominated == FALSE & ever_infected == FALSE ~ "low",
-      TRUE ~ "high"
-    )
-  )
-
-# Select relevant columns: PatientID, MRN, Priority
-result_table <- patients_with_status %>%
-  select(PatientID, MRN, Priority)
-
-# Write the result_table to CSV
-write_csv(result_table, "document/tables/hct_patient_MRN.csv")
 ```
 
 ## Linking 16S ASVs to metagenome
@@ -1224,6 +1177,86 @@ python software/custom/extract_gene_aa.py ${GBK_1179} \
  
 For patient 1179, all genomes had identical PBP5 and PSR sequences with all almost all critical AAs matching the PBP5-R consensus (Pietta et al., 2014), including i466S and A485. The exception was residue V586, which matched PBP5-S.
 
+## Patient sample selection for additional experiments
+
+### Get patient MRNs to get access to additional metagenomic data
+
+I needed to give Angel the MRNs of the patients that I'm interested in to see if I can get access to aditional metagenomic data that is not yet published:
+
+```{r}
+# Load the patient dictionary
+patient_dictionary <- suppressMessages(
+  read_csv("data/tCastoriPatientDictionaryWithDatesAndOtherStudiesPatientId.txt")
+)
+
+tblhctmeta <- read_csv("data/tblhctmeta.csv")
+
+# Filter tblASVsamples for patients with no AccessionShotgun
+patients_no_shotgun <- tblASVsamples %>%
+  filter(is.na(AccessionShotgun) & between(DayRelativeToNearestHCT, -30, 30)) %>%
+  distinct(PatientID)
+
+# Keep only patients present in patient_dictionary
+patients_no_shotgun <- patients_no_shotgun %>%
+  filter(PatientID %in% patient_dictionary$cmicId)
+
+# Join with patient_dictionary to get MRN
+patients_with_mrn <- patients_no_shotgun %>%
+  left_join(patient_dictionary, by = c("PatientID" = "cmicId"))
+
+# Join with summary_data to get domination/infection status
+patients_with_status <- patients_with_mrn %>%
+  left_join(summary_data, by = "PatientID") %>%
+  mutate(
+    Priority = case_when(
+      ever_dominated == TRUE | ever_infected == TRUE ~ "high",
+      ever_dominated == FALSE & ever_infected == FALSE ~ "low",
+      TRUE ~ "high"
+    )
+  )
+
+# Select relevant columns: PatientID, MRN, Priority
+result_table <- patients_with_status %>%
+  select(PatientID, MRN, Priority)
+
+# Write the result_table to CSV
+write_csv(result_table, "document/tables/hct_patient_MRN.csv")
+```
+
+### Sample selection for long-read metagenomes and strain isolation (pilot)
+
+Based on the results above, I will target three patients:
+
+  - 1179
+  - 1044
+  - 668
+
+The goal was to obtain four stool samples per patient, i.e., two on each side of the strain shift timepoint. I prepared a table with MRNs and collection dates for Jen/Zoe to check availability:
+
+```{r}
+# Selected patients
+pilot_patients <- c("1179", "1044", "668")
+
+# Table with sample info
+pilot_samples <- meta_tblASVsamples_with_dates %>%
+  filter(PatientID %in% pilot_patients) %>%
+  mutate(SampleID = str_remove(SampleID, "s_")) %>%
+  mutate(SampleGroup = case_when(
+                                  PatientID == "1179" & between(DayRelativeToNearestHCT, 3, 10) ~ "group1",
+                                  PatientID == "1179" & between(DayRelativeToNearestHCT, 11, 40) ~ "group2",
+                                  PatientID == "1044" & between(DayRelativeToNearestHCT, -3, 5) ~ "group3",
+                                  PatientID == "1044" & between(DayRelativeToNearestHCT, 6, 18) ~ "group4",
+                                  PatientID == "668" & between(DayRelativeToNearestHCT, 7, 40) ~ "group5",
+                                  PatientID == "668" & between(DayRelativeToNearestHCT, 41, 60) ~ "group6",
+                                  TRUE ~ "notincluded"
+  )) %>%
+  select(MRN, collectionDate, PatientID, SampleID, SampleGroup) %>%
+  filter(SampleGroup != "notincluded") %>%
+  arrange(SampleGroup)
+
+# Save table
+write_csv(pilot_samples, "document/tables/pilot_sample_info.csv")
+```
 
 ## Trash
 ```{r, eval=FALSE}

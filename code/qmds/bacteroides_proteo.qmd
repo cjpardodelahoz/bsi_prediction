@@ -82,22 +82,79 @@ tblrel_genus_meta %>%
 After zooming-in and looking at the variation around the average relative abundance of *Bacteroides*, there seem to be some differences in the dynamic behavior between infected and non-infected patients, although the relative abundance estimates in infected patients are very noisy. I first tested this using a linear model:
 
 ```{r}
-bacteroides_lm <- lm(Bacteroides_abund ~ Escherichia_infection + factor(DayRelativeToNearestHCT), data = filter(tblrel_genus_meta, between(DayRelativeToNearestHCT, -10, 25)))
+bacteroides_lm <- lm(Bacteroides_abund ~
+  Escherichia_infection + factor(DayRelativeToNearestHCT),
+  data = filter(tblrel_genus_meta, between(DayRelativeToNearestHCT, -10, 25)))
 summary(bacteroides_lm)
-
-bacteroides_bsi_lm <- glm(Escherichia_infection ~ Bacteroides_abund + factor(DayRelativeToNearestHCT), data = filter(tblrel_genus_meta, between(DayRelativeToNearestHCT, -10, 25)), family = binomial)
-summary(bacteroides_bsi_lm)
 ```
 
 which has a significant positive coefficient. But the significance is lost once I use a linear mixed effects model to account for within-patient variation:
 
 ```{r}
 library(lme4)
-bacteroides_lmm <- lmer(Escherichia_infection ~ Bacteroides_abund+ factor(DayRelativeToNearestHCT) + (1|PatientID), data = filter(tblrel_genus_meta, between(DayRelativeToNearestHCT, -10, 25)))
+bacteroides_lmm <- lmer(Escherichia_infection ~
+  Bacteroides_abund+ factor(DayRelativeToNearestHCT) + (1|PatientID),
+  data = filter(tblrel_genus_meta, between(DayRelativeToNearestHCT, -10, 25)))
 summary(bacteroides_lmm)
 ```
 
 This could be due to high within-patient variation relative to the effect size and low number of samples for each patient.
+
+```{r}
+load("analyses/processed_data/tblpatientday_clinical.RData")
+tblpatientday_clinical <- tblpatientday_clinical %>%
+  mutate(DayRelativeToNearestHCT = as.numeric(DayRelativeToNearestHCT))
+
+
+tblrel_genus_meta_clinical <- tblrel_genus_meta %>%
+  left_join(tblpatientday_clinical, by = c("PatientID", "DayRelativeToNearestHCT"))
+  
+# BSI logistic regression
+bacteroides_bsi_glm <- glm(Escherichia_infection ~ 
+  Bacteroides_abund + factor(DayRelativeToNearestHCT), 
+  data = filter(tblrel_genus_meta, between(DayRelativeToNearestHCT, -10, 25)),
+  family = binomial)
+summary(bacteroides_bsi_glm)
+
+# BSI logistic regression with random effect for patients IDs
+bacteroides_bsi_glmm <- glmer(
+  Escherichia_infection ~ Bacteroides_abund + factor(DayRelativeToNearestHCT) + (1 | PatientID),
+  data = filter(tblrel_genus_meta, between(DayRelativeToNearestHCT, -10, 25)),
+  family = binomial)
+summary(bacteroides_bsi_glmm)
+
+# Bacteroides association with Escherichia
+bacteroides_proteo_lm <- lm(`Escherichia-Shigella_abund` ~ 
+  Bacteroides_abund + factor(DayRelativeToNearestHCT), 
+  data = filter(tblrel_genus_meta, between(DayRelativeToNearestHCT, -10, 25)))
+summary(bacteroides_proteo_lm)
+
+# Bacteroides association with Escerichia with random effect for patient IDs
+bacteroides_proteo_lme <- lmer(`Escherichia-Shigella_abund` ~ 
+  Bacteroides_abund + factor(DayRelativeToNearestHCT) + (1|PatientID), 
+  data = filter(tblrel_genus_meta, between(DayRelativeToNearestHCT, -10, 25)))
+summary(bacteroides_proteo_lme)
+
+# Bacteroides association with Escherichia conditional on quinolone abx and random effect for patient ID
+bacteroides_proteo_abx_lme <- lmer(
+  `Escherichia-Shigella_abund` ~ 
+    Bacteroides_abund * quinolones + 
+    factor(DayRelativeToNearestHCT) + 
+    (1 | PatientID),
+  data = filter(tblrel_genus_meta_clinical, between(DayRelativeToNearestHCT, -10, 25)))
+summary(bacteroides_proteo_abx_lme)
+
+# Average Bacteroides abundance per patient and BSI
+patient_summary <- tblrel_genus_meta %>%
+  filter(between(DayRelativeToNearestHCT, -10, 25)) %>%
+  group_by(PatientID) %>%
+  summarise(
+    mean_bacteroides = mean(Bacteroides_abund, na.rm = TRUE),
+    ever_infected = as.integer(any(Escherichia_infection == 1)),
+  )
+
+glm(ever_infected ~ mean_bacteroides, data = patient_summary, family = binomial) %>% summary()
+```
 
 ### Distribution of relative abundance in patients infected by *Enterococcus* vs *Escherichia*
 

@@ -1306,3 +1306,21 @@ fastani <- fastani %>%
         # Plot the tree with base R and color tip labels by ST
         plot(faecium_hclust_tree, tip.color = st_colors, cex = 0.8)
 ```
+
+```{bash, eval=false}
+# Activate isabl conda
+conda activate /usersoftware/collab004/conda/isablprod
+
+# Set env variables
+export ISABL_CLIENT_ID=1
+export ISABL_API_URL="https://isabl.microbiome.mskcc.org/api/v1"
+
+# Get table with lilac paths to preprocessed reads
+isabl get-metadata analyses \
+  -fi application.pk 43 \
+  -fi targets.sample.identifier.in 668Z,668X \
+  --field pk \
+  --field targets.sample.identifier \
+  --field results.fq1 \
+  --field results.fq2
+```

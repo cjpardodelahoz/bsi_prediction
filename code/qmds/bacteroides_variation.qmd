@@ -683,6 +683,10 @@ sbatch code/scripts/bacteroides_variation/bacteroides_dbcan.sh #16607040
 Then, I explored how the MAGs clusterd in (i) a UMAP space by PUL content (predicted from BLAST to PUL database):
 
 ```{r}
+# Load UMAP library and set seed
+library(umap)
+set.seed(42)
+
 # Find all PUL predictions files recursively
 tsv_files <- list.files(
   path = "analyses/bacteroides_variation/cgc/dbcan",
@@ -704,45 +708,146 @@ pul_data <- purrr::map_dfr(tsv_files, function(f) {
   ) %>%
     dplyr::mutate(mag = parent_dir)
   }) %>%
-  filter(!is.na(PULID))
-
-# Create a binary presence/absence matrix of PULID by MAG
-pul_matrix <- pul_data %>%
-  distinct(mag, PULID) %>%
-  mutate(present = 1) %>%
-  pivot_wider(names_from = PULID, values_from = present, values_fill = 0) %>%
+  filter(!is.na(PULID)) %>%
   left_join(select(bacteroides_mag_data, Name, species, PatientID), by = c("mag" = "Name")) %>%
   filter(!is.na(PatientID))
 
-  # Load required library
-  library(umap)
+# Create a binary presence/absence matrix of PULID by MAG
+# Create binary presence/absence matrix of PULID by MAG, keeping species column
+pul_matrix <- pul_data %>%
+  distinct(mag, PULID, species) %>%
+  mutate(present = 1) %>%
+  pivot_wider(names_from = PULID, values_from = present, values_fill = 0)
 
-  # Select only PUL columns for UMAP
-  pul_cols <- grep("^PUL", colnames(pul_matrix), value = TRUE)
-  pul_umap_input <- as.matrix(pul_matrix[, pul_cols])
+# Select only PUL columns for UMAP (exclude 'mag' and 'species')
+pul_cols <- setdiff(colnames(pul_matrix), c("mag", "species"))
+pul_umap_input <- as.matrix(pul_matrix[, pul_cols])
 
-  # Run UMAP
-  set.seed(42)
-  pul_umap <- umap(pul_umap_input)
+# Run UMAP
 
-  # Add UMAP coordinates to the data frame
-  pul_matrix$UMAP1 <- pul_umap$layout[, 1]
-  pul_matrix$UMAP2 <- pul_umap$layout[, 2]
+pul_umap <- umap(pul_umap_input)
 
-  # Assign a specific color to each species value
-  species_levels <- unique(pul_matrix$species)
-  # If there are more species than colors, repeat colors (or expand palette as needed)
-  species_colors <- setNames(rep(paired13, length.out = length(species_levels)), species_levels)
+# Add UMAP coordinates to the data frame
+pul_matrix$UMAP1 <- pul_umap$layout[, 1]
+pul_matrix$UMAP2 <- pul_umap$layout[, 2]
 
-  # Plot UMAP colored by species with explicit color assignment
-  ggplot(pul_matrix, aes(x = UMAP1, y = UMAP2, color = species)) +
-    geom_point(alpha = 0.8, size = 2) +
-    scale_color_manual(values = species_colors, breaks = species_levels) +
-    labs(
-      x = "UMAP 1",
-      y = "UMAP 2",
-      color = "Species",
-      title = "UMAP clustering of MAGs by PUL content"
-    ) +
-    custom_theme
+# Assign a specific color to each species value
+species_levels <- unique(pul_matrix$species)
+library(RColorBrewer)
+species_colors <- setNames(brewer.pal(max(3, min(length(species_levels), 12)), "Paired")[seq_along(species_levels)], species_levels)
+
+# Plot UMAP colored by species with explicit color assignment
+ggplot(pul_matrix, aes(x = UMAP1, y = UMAP2, color = species)) +
+  geom_point(alpha = 0.8, size = 2) +
+  scale_color_manual(values = species_colors, breaks = species_levels) +
+  labs(
+    x = "UMAP 1",
+    y = "UMAP 2",
+    color = "Species"
+  ) +
+  custom_theme
+```
+
+```{r}
+# Load phylogenetics packages
+suppressMessages(library(ape))
+suppressMessages(library(ggtree))
+suppressMessages(library(treeio))
+suppressMessages(library(ggtreeExtra))
+suppressMessages(library(aplot))
+
+# Count the number of times each PUL appears in each MAG
+pul_count_matrix <- pul_data %>%
+  group_by(mag, PULID) %>%
+  summarise(copy_number = n(), .groups = "drop") %>%
+  pivot_wider(names_from = PULID, values_from = copy_number, values_fill = 0)
+
+# Set rownames to MAGs and convert to matrix class
+pul_count_matrix <- as.data.frame(pul_count_matrix)
+rownames(pul_count_matrix) <- pul_count_matrix$mag
+pul_count_matrix <- as.matrix(pul_count_matrix[,-1])
+
+# Calculate PUL distance matrix
+pul_dist_matrix <- dist(pul_count_matrix, method = "euclidean")
+
+# Estimate hierarchical clustering
+pul_hc <- hclust(pul_dist_matrix, method = "average")
+
+# Convert hclust to phylo
+pul_tree <- as.phylo(pul_hc)
+
+# Table with MAG species
+mag_species <- pul_data %>%
+  distinct(mag, species)
+
+# Table with PUL substrates
+pul_substrate <- pul_data %>%
+  distinct(PULID, `dbCAN-PUL substrate`)
+
+# Create a custom palette of 13 distinct colors
+custom_13 <- c(
+  "#1b9e77", "#d95f02", "#7570b3", "#e7298a", "#66a61e",
+  "#e6ab02", "#a6761d", "#666666", "#a6cee3", "#fb9a99",
+  "#fdbf6f", "#b2df8a", "#cab2d6"
+)
+
+# Ensure species is a factor and assign colors
+mag_species$species <- factor(mag_species$species)
+species_levels <- levels(mag_species$species)
+species_colors <- setNames(custom_13[seq_along(species_levels)], species_levels)
+
+# Plot the tree with colored squares for species
+pul_tree_plot <- ggtree(pul_tree) +
+  geom_fruit(
+    data = mag_species,
+    geom = geom_tile,
+    mapping = aes(y = mag, fill = species),
+    width = 0.05,
+    offset = 0.02,
+    color = NA
+  ) +
+  scale_fill_manual(values = species_colors, name = "Species") #+
+#  theme(legend.position = "none")
+  
+# Summarize the number of PULs for each MAG and substrate
+pul_bubble <- pul_data %>%
+  group_by(mag, substrate = `dbCAN-PUL substrate`) %>%
+  summarise(count = n(), .groups = "drop")
+
+# Define the order of carbohydrate substrates by complexity
+carb_order <- c(
+  "capsule polysaccharide synthesis", "capsule polysaccharide degradation", "mucin", "host glycan",
+  "glycosaminoglycan", "human milk oligosaccharide", "pectin", "arabinogalactan", "arabinoxylan", "xyloglucan",
+  "galactomannan", "glucomannan", "alginate", "carrageenan", "agarose",
+  "starch", "glycogen", "cellulose", "chitin", "beta-glucan", "beta-mannan", "alpha-mannan", "alpha-galactan",
+  "arabinan", "xylan", "fructan",
+  "beta-galactooligosaccharide", "beta-mannooligosaccharide", "raffinose", "melibiose", "cellobiose", "trehalose",
+  "galactose", "fucose", "ribose", "beta-glucoside", "levoglucosan"
+)
+
+# Keep only substrates present in the data
+carb_order <- carb_order[carb_order %in% pul_bubble$substrate]
+pul_bubble$substrate <- factor(pul_bubble$substrate, levels = carb_order)
+
+# Bubble plot: MAGs vs carbohydrate substrates, bubble size/color = PUL count
+polysacc_bubblemap <- ggplot(pul_bubble, aes(x = substrate, y = mag, size = count, color = count)) +
+  geom_point(alpha = 0.6) +
+  scale_size_continuous(name = "PUL count") +
+  scale_color_viridis_c(name = "PUL count", direction = -1) +
+  theme_minimal(base_size = 10) +
+  theme(
+    axis.text.x = element_text(angle = 45, hjust = 1),
+    axis.text.y = element_blank(), # Remove Y axis labels
+    axis.title.y = element_blank() # Remove Y axis label
+  ) +
+  labs(
+    x = "Carbohydrate substrate (ordered by complexity)"
+  )
+
+# Join cluter and bubblemap plots
+polysacc_bubblemap %>% insert_left(pul_tree_plot)
+
+# Save the plot
+ggsave(filename = "document/plots/bacteroides_pul_bubblemap.pdf",
+  height = 12, width = 10)
 ```

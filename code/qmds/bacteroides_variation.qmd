@@ -668,6 +668,36 @@ asv_species_summary <- asv_to_meta_map %>%
 print(asv_species_summary)
 ```
 
+### Gnerating ASV identity table
+
+With the information above, I generated a table with the identities of all ASVs in the full dataset. For ASVs with 0 mismatches to a single *Bacteroides/Phocaeicola* species, I set the identity at the species level. For all other ASVs, I sent the identity at the genus level:
+
+```{r}
+# Table with species IDs for single-matching Bacteroides ASVs
+bacteroides_species_asvs <- asv_species_summary %>%
+  filter(mismatches == 0 & n_species == 1 & !str_detect(species, "uncultured.*")) %>%
+  select(asv, species)
+
+# Table with all ASV genus identities and Bacteroides speices
+asv_genera_bacteroides_species <- suppressMessages(
+  read_csv("data/tblASVtaxonomy_silva132_v4v5_filter.csv")
+) %>%
+  select(ASV, Genus) %>%
+  left_join(bacteroides_species_asvs, by = c("ASV" = "asv")) %>%
+  mutate(identity = if_else(is.na(species), Genus, species)) %>%
+  select(ASV, identity)
+
+# Save the table as R object for modeling
+
+# Create the directory if it doesn't exist
+if (!dir.exists("analyses/processed_data")) {
+    dir.create("analyses/processed_data", recursive = TRUE)
+}
+
+# Save the table object as an .RData file
+save(asv_genera_bacteroides_species, file = "analyses/processed_data/asv_genera_bacteroides_species.RData")
+```
+
 ## Polysaccharide degradation potential variation
 
 The goal here was to determine whether genomic potential for carbohydrate degradation was variable between species and consistent within species.

@@ -6,6 +6,123 @@ format:
     code-summary: "Show the code"
 ---
 
+### Distribution of relative abundance in patients infected by *Enterococcus* vs *Escherichia*
+
+```{r}
+load("analyses/processed_data/tblpatientday_clinical.RData")
+
+# Filter data for samples taken between DayRelativeToNearestHCT == 0 and DayRelativeToNearestHCT == 25
+filtered_genus_meta <- tblrel_genus_meta %>%
+  filter(DayRelativeToNearestHCT >= 0, DayRelativeToNearestHCT <= 25)
+
+# Get the first infection day for Enterococcus and Escherichia for each patient
+first_infection_days <- tblpatientday_clinical %>%
+  mutate(DayRelativeToNearestHCT = as.numeric(as.character(DayRelativeToNearestHCT))) %>%
+  group_by(PatientID) %>%
+  summarise(
+    Enterococcus_infection_day = ifelse(any(Enterococcus_infection == 1), 
+                                        min(DayRelativeToNearestHCT[Enterococcus_infection == 1], na.rm = TRUE), 
+                                        NA_real_),
+    Escherichia_infection_day = ifelse(any(Escherichia_infection == 1), 
+                                       min(DayRelativeToNearestHCT[Escherichia_infection == 1], na.rm = TRUE), 
+                                       NA_real_),
+    .groups = "drop"
+  )
+
+# Merge infection days with genus metadata
+filtered_genus_meta <- filtered_genus_meta %>%
+  left_join(first_infection_days, by = "PatientID")
+
+# Filter data for each set
+enterococcus_infected <- filtered_genus_meta %>%
+  filter(!is.na(Enterococcus_infection_day), DayRelativeToNearestHCT <= Enterococcus_infection_day)
+
+enterococcus_not_infected <- filtered_genus_meta %>%
+  filter(is.na(Enterococcus_infection_day))
+
+escherichia_infected <- filtered_genus_meta %>%
+  filter(!is.na(Escherichia_infection_day), DayRelativeToNearestHCT <= Escherichia_infection_day)
+
+escherichia_not_infected <- filtered_genus_meta %>%
+  filter(is.na(Escherichia_infection_day))
+
+# Combine Enterococcus data into a single data frame for plotting
+enterococcus_combined <- bind_rows(
+  enterococcus_infected %>% mutate(Group = "Infected with Enterococcus"),
+  enterococcus_not_infected %>% mutate(Group = "Not infected with Enterococcus")
+) %>%
+  filter(`Enterococcus_abund` > 0)
+
+# Create the density plot for Enterococcus
+ggplot(enterococcus_combined, aes(x = Enterococcus_abund, fill = Group)) +
+  geom_density(alpha = 0.6, size = 0.2) +
+  scale_fill_manual(values = c(
+    "Infected with Enterococcus" = "#0D7E2B",
+    "Not infected with Enterococcus" = "gray75"
+  )) +
+  labs(
+    x = "Relative abundance of Enterococcus",
+    y = "Density",
+    fill = "Patient status"
+  ) +
+  custom_theme +
+  theme(legend.position = c(0.5, 0.8))
+
+# Save the plot
+ggsave("document/plots/rel_density_enterococcus.pdf", width = 3.6, height = 3.6)
+
+# Combine Escherichia data into a single data frame for plotting
+escherichia_combined <- bind_rows(
+  escherichia_infected %>% mutate(Group = "Infected with Escherichia"),
+  escherichia_not_infected %>% mutate(Group = "Not infected with Escherichia")
+)
+
+# Filter out zeros for Escherichia abundance
+escherichia_combined_filtered <- escherichia_combined %>%
+  filter(`Escherichia-Shigella_abund` > 0.01)
+
+# Create the density plot for Escherichia (excluding zeros)
+ggplot(escherichia_combined_filtered, aes(x = `Escherichia-Shigella_abund`, fill = Group)) +
+  geom_density(alpha = 0.6, size = 0.2) +
+  scale_fill_manual(values = c(
+    "Infected with Escherichia" = "#EE2C2C",
+    "Not infected with Escherichia" = "gray75"
+  )) +
+  labs(
+    x = "Relative abundance of Escherichia",
+    y = "Density",
+    fill = "Patient status"
+  ) +
+  custom_theme +
+  theme(legend.position = c(0.5, 0.8))
+
+# Save the plot
+ggsave("document/plots/rel_density_escherichia.pdf", width = 3.6, height = 3.6)
+```
+
+```{r}
+# Filter samples for abundance > 0.01 and days between 0 and 25
+scatter_data <- tblrel_genus_meta %>%
+  filter(
+    DayRelativeToNearestHCT >= 0, DayRelativeToNearestHCT <= 25,
+    `Escherichia-Shigella_abund` > 0.01,
+    Bacteroides_abund > 0.01
+  )
+
+# Make scatterplot stratified by Escherichia infection status
+ggplot(scatter_data, aes(x = Bacteroides_abund, y = `Escherichia-Shigella_abund`, color = Escherichia_infection)) +
+  geom_point(alpha = 0.7, size = 2) +
+  scale_color_manual(values = c(`TRUE` = "#EE2C2C", `FALSE` = "gray60")) +
+  labs(
+    x = "Relative abundance of Bacteroides",
+    y = "Relative abundance of Escherichia",
+    color = "Escherichia infection") +
+  custom_theme +
+  theme(legend.position = c(0.7, 0.8))
+
+ggsave("document/plots/rel_bacteroides_escherichia.pdf", width = 3.6, height = 3.6)
+```
+
 ### Relative abundance dynamics of *Bacteroides* and pathogenic Proteobacteria
 
 We are going to visualize the change in relative abundance of *Bacteroides* and pathogenic Proteobacteria over time in the allo-HCT patient dataset. We want to determine if the dynamics are different in patients that suffered infections by the Proteobacteria compared to patients who did not get infected. For pathogens, we already expect their abundance increases and we are mostly replicating some of the results of Liao et al, 2021.
@@ -156,162 +273,83 @@ patient_summary <- tblrel_genus_meta %>%
 glm(ever_infected ~ mean_bacteroides, data = patient_summary, family = binomial) %>% summary()
 ```
 
-### Distribution of relative abundance in patients infected by *Enterococcus* vs *Escherichia*
+### Quantifying association between Bacteroides and Escherichia abundance and infection risk
 
 ```{r}
-load("analyses/processed_data/tblpatientday_clinical.RData")
+# Load Libraries for modeling
+library(lme4)
+library(broom)
 
-# Filter data for samples taken between DayRelativeToNearestHCT == 0 and DayRelativeToNearestHCT == 25
-filtered_genus_meta <- tblrel_genus_meta %>%
-  filter(DayRelativeToNearestHCT >= 0, DayRelativeToNearestHCT <= 25)
-
-# Get the first infection day for Enterococcus and Escherichia for each patient
-first_infection_days <- tblpatientday_clinical %>%
-  mutate(DayRelativeToNearestHCT = as.numeric(as.character(DayRelativeToNearestHCT))) %>%
-  group_by(PatientID) %>%
-  summarise(
-    Enterococcus_infection_day = ifelse(any(Enterococcus_infection == 1), 
-                                        min(DayRelativeToNearestHCT[Enterococcus_infection == 1], na.rm = TRUE), 
-                                        NA_real_),
-    Escherichia_infection_day = ifelse(any(Escherichia_infection == 1), 
-                                       min(DayRelativeToNearestHCT[Escherichia_infection == 1], na.rm = TRUE), 
-                                       NA_real_),
-    .groups = "drop"
-  )
-
-# Merge infection days with genus metadata
-filtered_genus_meta <- filtered_genus_meta %>%
-  left_join(first_infection_days, by = "PatientID")
-
-# Filter data for each set
-enterococcus_infected <- filtered_genus_meta %>%
-  filter(!is.na(Enterococcus_infection_day), DayRelativeToNearestHCT <= Enterococcus_infection_day)
-
-enterococcus_not_infected <- filtered_genus_meta %>%
-  filter(is.na(Enterococcus_infection_day))
-
-escherichia_infected <- filtered_genus_meta %>%
-  filter(!is.na(Escherichia_infection_day), DayRelativeToNearestHCT <= Escherichia_infection_day)
-
-escherichia_not_infected <- filtered_genus_meta %>%
-  filter(is.na(Escherichia_infection_day))
-
-# Combine Enterococcus data into a single data frame for plotting
-enterococcus_combined <- bind_rows(
-  enterococcus_infected %>% mutate(Group = "Infected with Enterococcus"),
-  enterococcus_not_infected %>% mutate(Group = "Not infected with Enterococcus")
-) %>%
-  filter(`Enterococcus_abund` > 0)
-
-# Create the density plot for Enterococcus
-ggplot(enterococcus_combined, aes(x = Enterococcus_abund, fill = Group)) +
-  geom_density(alpha = 0.6, size = 0.2) +
-  scale_fill_manual(values = c(
-    "Infected with Enterococcus" = "#0D7E2B",
-    "Not infected with Enterococcus" = "gray75"
-  )) +
-  labs(
-    x = "Relative abundance of Enterococcus",
-    y = "Density",
-    fill = "Patient status"
-  ) +
-  custom_theme +
-  theme(legend.position = c(0.5, 0.8))
-
-# Save the plot
-ggsave("document/plots/rel_density_enterococcus.pdf", width = 3.6, height = 3.6)
-
-# Combine Escherichia data into a single data frame for plotting
-escherichia_combined <- bind_rows(
-  escherichia_infected %>% mutate(Group = "Infected with Escherichia"),
-  escherichia_not_infected %>% mutate(Group = "Not infected with Escherichia")
-)
-
-# Filter out zeros for Escherichia abundance
-escherichia_combined_filtered <- escherichia_combined %>%
-  filter(`Escherichia-Shigella_abund` > 0.01)
-
-# Create the density plot for Escherichia (excluding zeros)
-ggplot(escherichia_combined_filtered, aes(x = `Escherichia-Shigella_abund`, fill = Group)) +
-  geom_density(alpha = 0.6, size = 0.2) +
-  scale_fill_manual(values = c(
-    "Infected with Escherichia" = "#EE2C2C",
-    "Not infected with Escherichia" = "gray75"
-  )) +
-  labs(
-    x = "Relative abundance of Escherichia",
-    y = "Density",
-    fill = "Patient status"
-  ) +
-  custom_theme +
-  theme(legend.position = c(0.5, 0.8))
-
-# Save the plot
-ggsave("document/plots/rel_density_escherichia.pdf", width = 3.6, height = 3.6)
-```
-
-```{r}
-# Filter samples for abundance > 0.01 and days between 0 and 25
-scatter_data <- tblrel_genus_meta %>%
-  filter(
-    DayRelativeToNearestHCT >= 0, DayRelativeToNearestHCT <= 25,
-    `Escherichia-Shigella_abund` > 0.01,
-    Bacteroides_abund > 0.01
-  )
-
-# Make scatterplot stratified by Escherichia infection status
-ggplot(scatter_data, aes(x = Bacteroides_abund, y = `Escherichia-Shigella_abund`, color = Escherichia_infection)) +
-  geom_point(alpha = 0.7, size = 2) +
-  scale_color_manual(values = c(`TRUE` = "#EE2C2C", `FALSE` = "gray60")) +
-  labs(
-    x = "Relative abundance of Bacteroides",
-    y = "Relative abundance of Escherichia",
-    color = "Escherichia infection") +
-  custom_theme +
-  theme(legend.position = c(0.7, 0.8))
-
-ggsave("document/plots/rel_bacteroides_escherichia.pdf", width = 3.6, height = 3.6)
-```
-
-### Patient-specific time series
-
-
-```{r, echo = FALSE, eval = FALSE}
-# Prepare asv-level counts and metadata for plotting
+# Table with ASVs and infection data
 tblrel_asv_meta <- prep_taxa_counts("asv")
 
-# Load taxonomy data with colors and filter to tax level
-taxlevel_color <- read_csv("data/tblASVtaxonomy_silva132_v4v5_filter.csv") %>%
-  select(ASV, HexColor, ColorOrder) %>%
-  distinct(ASV, .keep_all = TRUE)
+# Load the table with ASV identities
+load("analyses/processed_data/asv_genera_bacteroides_species.RData")
 
-# Filter data for PatientID 1511 and time points between -5 and 20
-patient_1511_data <- tblrel_asv_meta %>%
-  filter(PatientID == 1511, DayRelativeToNearestHCT >= -5, DayRelativeToNearestHCT <= 20) %>%
-  select(DayRelativeToNearestHCT, ends_with("_abund")) %>%
-  pivot_longer(
-    cols = ends_with("_abund"),
-    names_to = "Taxa",
-    values_to = "RelativeAbundance"
-  ) %>%
-  mutate(Taxa = str_remove(Taxa, "_abund"))
+# Gut-borne pathoges to filter
+gutborne_pathogens <- c("Enterococcus",
+                        "Escherichia-Shigella",
+                        "Klebsiella",
+                        "Enterobacter",
+                        "Citrobacter",
+                        "Salmonella",
+                        "<not present>")
 
-# Merge patient data with taxonomy colors and order by ColorOrder
-patient_1511_data <- patient_1511_data %>%
-  left_join(taxlevel_color, by = c("Taxa" = "ASV")) %>%
-  arrange(ColorOrder)
+# Filter out ASVs from potential pathogens
+asv_genera_bacteroides_species <- asv_genera_bacteroides_species %>%
+  filter(!identity %in% gutborne_pathogens)
 
-# Plot microbial composition for PatientID 1511 with assigned colors and order
-ggplot(patient_1511_data, aes(x = DayRelativeToNearestHCT, y = RelativeAbundance, fill = reorder(Taxa, -ColorOrder))) +
-  geom_bar(stat = "identity", position = "stack") +
-  scale_fill_manual(values = setNames(patient_1511_data$HexColor, patient_1511_data$Taxa)) +
-  labs(
-    title = "Microbial Composition of Patient 1511",
-    x = "Days Relative to Nearest HCT",
-    y = "Relative Abundance"
-  ) +
-  custom_theme +
-  theme(legend.position = "none")
+# Prepare output columns
+asv_genera_bacteroides_species$glm_coef <- NA
+asv_genera_bacteroides_species$glm_pval <- NA
+asv_genera_bacteroides_species$glmer_coef <- NA
+asv_genera_bacteroides_species$glmer_pval <- NA
+
+# Loop through each ASV
+for (i in seq_len(nrow(asv_genera_bacteroides_species[1:2,]))) {
+  asv <- asv_genera_bacteroides_species$ASV[i]
+  asv_col <- paste0(asv, "_abund")
+  
+  # Only run if ASV_abund column exists
+  if (asv_col %in% colnames(tblrel_asv_meta)) {
+    # Prepare data
+    df <- tblrel_asv_meta %>%
+      select(Sample, PatientID, all_of(asv_col), DayRelativeToNearestHCT, Escherichia_infection) %>%
+      filter(between(DayRelativeToNearestHCT, -10, 25)) %>%
+      mutate(ASV_abund = .data[[asv_col]])
+    
+    df <- tblrel_asv_meta %>%
+      select(Sample, PatientID, all_of(asv_col), DayRelativeToNearestHCT, Escherichia_infection) %>%
+      filter(between(DayRelativeToNearestHCT, -10, 25)) %>%
+      group_by(PatientID) %>%
+      filter(n() >= 5) %>%
+      ungroup() %>%
+      mutate(ASV_abund = .data[[asv_col]])
+    
+    # GLM
+    glm_fit <- glm(Escherichia_infection ~ ASV_abund + factor(DayRelativeToNearestHCT),
+                   data = df, family = binomial)
+    glm_coef <- coef(summary(glm_fit))["ASV_abund", "Estimate"]
+    glm_pval <- coef(summary(glm_fit))["ASV_abund", "Pr(>|z|)"]
+    
+    # GLMER
+    glmer_fit <- glmer(Escherichia_infection ~ ASV_abund + factor(DayRelativeToNearestHCT) + (1 | PatientID),
+                       data = df, family = binomial)
+    glmer_coef <- coef(summary(glmer_fit))["ASV_abund", "Estimate"]
+    glmer_pval <- coef(summary(glmer_fit))["ASV_abund", "Pr(>|z|)"]
+    
+    # Store results
+    asv_genera_bacteroides_species$glm_coef[i] <- glm_coef
+    asv_genera_bacteroides_species$glm_pval[i] <- glm_pval
+    asv_genera_bacteroides_species$glmer_coef[i] <- glmer_coef
+    asv_genera_bacteroides_species$glmer_pval[i] <- glmer_pval
+  }
+}
+
+# Save the new table
+save(asv_genera_bacteroides_species, file = "analyses/processed_data/asv_genera_bacteroides_species_with_glm_glmer.RData")
+
+
 ```
 
 ### Cooccurrence

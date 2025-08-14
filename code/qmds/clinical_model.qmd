@@ -117,7 +117,7 @@ tblwbc <- suppressMessages(read_csv("data/tblwbc.csv")) %>%
     ungroup() %>%
     mutate(clinical_phase = case_when(
                 Status == "PreNeutropenia" ~ "PreNeutropenia",
-                Status %in% c("NeutropeniaStart", "Neutropenia", "TransitionToEngraftment") ~ "Neutropenia",
+                Status %in% c("NeutropeniaStart", "Neutropenia", "TransitionToEngraftment") | is.na(Status) ~ "Neutropenia",
                 Status %in% c("Engraftment", "PostEngraftment") ~ "PostEngraftment",
                 TRUE ~ Status
     )) %>%

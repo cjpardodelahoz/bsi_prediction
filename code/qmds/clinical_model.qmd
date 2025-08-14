@@ -84,10 +84,48 @@ staph <- c("Coagulase_Negative_Staphylococcus", "Staphylococcus")
 # Load and prepare clinical data
 tbltemperature <- suppressMessages(read_csv("data/tbltemperature.csv")) %>%
     select(-Timepoint)
+# Add a Status column to the filtered_wbc_data
+engraftment_threshold <- 3
 tblwbc <- suppressMessages(read_csv("data/tblwbc.csv")) %>%
-    filter(BloodCellType == "WBCtotal") %>%
+    filter(PatientID %in% single_hct_patients & BloodCellType == "WBCtotal") %>%
     mutate(WBCtotal = as.numeric(str_replace(Value, "<0.1", "0"))) %>%
-    select(PatientID, DayRelativeToNearestHCT, WBCtotal)
+    group_by(PatientID) %>%
+    arrange(DayRelativeToNearestHCT) %>%
+    mutate(
+        Status = case_when(
+            WBCtotal < 0.5 & cumall(lag(WBCtotal, default = Inf) >= 0.5) & row_number() > 1 ~ "NeutropeniaStart",
+            WBCtotal < 0.5 ~ "Neutropenia",
+            TRUE ~ NA_character_
+        )
+    ) %>%
+    mutate(
+        Status = case_when(
+            WBCtotal >= 0.5 & (purrr::map_lgl(row_number(), ~ any(Status[(.x + 1):n()] == "NeutropeniaStart")) | all(is.na(Status))) ~ "PreNeutropenia",
+            DayRelativeToNearestHCT > 0 & purrr::map_lgl(row_number(), ~ all(WBCtotal[max(1, (.x - engraftment_threshold)):.x] >= 0.5)) 
+            & lag(Status, (engraftment_threshold + 1), default = NA) %in% c("Neutropenia", "NeutropeniaStart") ~ "Engraftment",
+            TRUE ~ Status
+        )
+    ) %>%
+    mutate(
+        Status = case_when(
+            WBCtotal >= 0.5 & purrr::map_lgl(row_number(), ~ any(Status[1:(.x - 1)] == "Engraftment")) ~ "PostEngraftment",
+            Status == "Neutropenia" & purrr::map_lgl(row_number(), ~ any(Status[1:(.x - 1)] == "Engraftment")) ~ "NeutropeniaPostEngraftment",
+            WBCtotal >= 0.5 & purrr::map_lgl(row_number(), ~ any(Status[(.x + 1):(.x + engraftment_threshold)] == "Engraftment")) ~ "TransitionToEngraftment",
+            TRUE ~ Status
+        )
+    ) %>%
+    ungroup() %>%
+    mutate(clinical_phase = case_when(
+                Status == "PreNeutropenia" ~ "PreNeutropenia",
+                Status %in% c("NeutropeniaStart", "Neutropenia", "TransitionToEngraftment") ~ "Neutropenia",
+                Status %in% c("Engraftment", "PostEngraftment") ~ "PostEngraftment",
+                TRUE ~ Status
+    )) %>%
+    select(PatientID, DayRelativeToNearestHCT, WBCtotal, Status, clinical_phase)
+#tblwbc <- suppressMessages(read_csv("data/tblwbc.csv")) %>%
+#    filter(BloodCellType == "WBCtotal") %>%
+#    mutate(WBCtotal = as.numeric(str_replace(Value, "<0.1", "0"))) %>%
+#    select(PatientID, DayRelativeToNearestHCT, WBCtotal)
 tblmucositis <- suppressMessages(read_csv("data/mucositisSD.csv")) %>%
     filter(PatientID %in% unique(tblhctmeta$PatientID)) %>%
     rowwise() %>%
@@ -142,6 +180,8 @@ tblpatientday_clinical <- tblpatientday %>%
         DayRelativeToNearestHCT,
         MaxTemperature,
         WBCtotal,
+        Status,
+        clinical_phase,
         mucositis_grade,
         all_of(antibiotics),
         Staphylococcus_culture,

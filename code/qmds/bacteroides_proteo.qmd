@@ -9,6 +9,13 @@ format:
 ### Distribution of relative abundance in patients infected by *Enterococcus* vs *Escherichia*
 
 ```{r}
+# Load required libraries and functions
+suppressMessages(library(tidyverse))
+source("code/rfunctions/data_helpers.r")
+
+# Prepare genus-level counts and metadata for plotting
+tblrel_genus_meta <- prep_taxa_counts("genus")
+
 load("analyses/processed_data/tblpatientday_clinical.RData")
 
 # Filter data for samples taken between DayRelativeToNearestHCT == 0 and DayRelativeToNearestHCT == 25
@@ -128,13 +135,6 @@ ggsave("document/plots/rel_bacteroides_escherichia.pdf", width = 3.6, height = 3
 We are going to visualize the change in relative abundance of *Bacteroides* and pathogenic Proteobacteria over time in the allo-HCT patient dataset. We want to determine if the dynamics are different in patients that suffered infections by the Proteobacteria compared to patients who did not get infected. For pathogens, we already expect their abundance increases and we are mostly replicating some of the results of Liao et al, 2021.
 
 ```{r}
-# Load required libraries and functions
-suppressMessages(library(tidyverse))
-source("code/rfunctions/data_helpers.r")
-
-# Prepare genus-level counts and metadata for plotting
-tblrel_genus_meta <- prep_taxa_counts("genus")
-
 # Plot the average relative abundance of Escherichia over time, grouped by infection status
 tblrel_genus_meta %>%
   filter(!is.na(DayRelativeToNearestHCT), DayRelativeToNearestHCT >= -10, DayRelativeToNearestHCT <= 30) %>%
@@ -217,6 +217,367 @@ summary(bacteroides_lmm)
 
 This could be due to high within-patient variation relative to the effect size and low number of samples for each patient.
 
+### Quantifying association between Bacteroides and Escherichia abundance and infection risk
+
+I tried different strategies to formally quantify the risk of BSI using the abundance of *Bacteroides* as a predictor.
+
+#### Discrete-time logistic regressions
+
+I started with an exploratory analysis where I fitted discrete-time logistic regressions to test whether, over time, patients with BSIs by *Enterococcus* or *E. coli* had higher relative abundance of ASVs present in more than 3 samples from 3 different patients and which were not classified as genera known to cause gut-borne BSIs. After Bonferroni correction, this exploration revealed a single *Bacteroides* ASV (ASV_277 cf. *Bacteroides fragilis*) with a significantly positive association with *E. coli* BSI, but not *Enterococcus* BSI:
+
+```{r}
+# Load Libraries for modeling
+library(lme4)
+library(broom)
+
+# Load sample:patient key
+sample_patient_key <- read_csv("data/tblASVsamples.csv") %>%
+  select(SampleID, PatientID) %>%
+  distinct(SampleID, PatientID)
+
+# Select ASVs that are present in > 3 samples and > 3 patients
+asvs_to_model <- read_csv("data/tblcounts_asv_melt.csv") %>%
+  left_join(sample_patient_key, by = "SampleID") %>%
+  group_by(ASV) %>%
+  filter(n_distinct(PatientID) >= 3, n_distinct(SampleID) >= 3) %>%
+  ungroup() %>%
+  pull(ASV) %>%
+  unique()
+
+# Calculate number of samples and patients per ASV
+asv_counts <- read_csv("data/tblcounts_asv_melt.csv") %>%
+  left_join(sample_patient_key, by = "SampleID") %>%
+  group_by(ASV) %>%
+  summarise(
+    n_samples = n_distinct(SampleID),
+    n_patients = n_distinct(PatientID)
+  )
+
+# Load table with all ASV data
+tblrel_asv_meta <- prep_taxa_counts("asv")
+
+# Table with non-pathogenic ASV data
+tblrel_filtered_asv <- tblrel_asv_meta %>%
+  select(
+    Sample, PatientID, DayRelativeToNearestHCT, Escherichia_infection, Enterococcus_infection,
+    all_of(intersect(paste0(asvs_to_model, "_abund"), colnames(.)))
+  )
+
+# Load 
+load("analyses/processed_data/tblpatientday_clinical.RData")
+
+tblpatientday_clinical$DayRelativeToNearestHCT <- as.numeric(as.character(tblpatientday_clinical$DayRelativeToNearestHCT))
+
+#
+tblpatientday_bsi <- tblrel_filtered_asv %>%
+  left_join(tblpatientday_clinical, by = c("PatientID", "DayRelativeToNearestHCT"))
+
+# Load the table with ASV identities
+load("analyses/processed_data/asv_genera_bacteroides_species.RData")
+
+# Gut-borne pathoges to filter
+gutborne_pathogens <- c("Enterococcus",
+                        "Escherichia-Shigella",
+                        "Klebsiella",
+                        "Enterobacter",
+                        "Citrobacter",
+                        "Salmonella",
+                        "<not present>")
+
+# Filter out ASVs from potential pathogens
+asv_genera_bacteroides_species <- asv_genera_bacteroides_species %>%
+  filter(!identity %in% gutborne_pathogens & ASV %in% asvs_to_model)
+
+# Prepare output columns
+asv_genera_bacteroides_species$ecoli_glm_coef <- NA
+asv_genera_bacteroides_species$ecoli_glm_pval <- NA
+asv_genera_bacteroides_species$enterococcus_glm_coef <- NA
+asv_genera_bacteroides_species$enterococcus_glm_pval <- NA
+#asv_genera_bacteroides_species$glmer_coef <- NA
+#asv_genera_bacteroides_species$glmer_pval <- NA
+
+# Loop through each ASV
+for (i in seq_len(nrow(asv_genera_bacteroides_species))) {
+  asv <- asv_genera_bacteroides_species$ASV[i]
+  asv_col <- paste0(asv, "_abund")
+  
+  # Only run if ASV_abund column exists
+  if (asv_col %in% colnames(tblrel_asv_meta)) {
+    # Prepare data
+    df <- tblpatientday_bsi %>%
+      select(PatientID, all_of(asv_col), DayRelativeToNearestHCT, Escherichia_infection, Enterococcus_infection) %>%
+      filter(between(DayRelativeToNearestHCT, -9, 30)) %>%
+      mutate(ASV_abund = .data[[asv_col]])
+    
+    #df <- tblrel_asv_meta %>%
+     # select(Sample, PatientID, all_of(asv_col), DayRelativeToNearestHCT, Escherichia_infection) %>%
+      #filter(between(DayRelativeToNearestHCT, -9, 25)) %>%
+      #group_by(PatientID) %>%
+      #filter(n() >= 10) %>%
+      #ungroup() %>%
+      #mutate(ASV_abund = .data[[asv_col]])
+    
+    # GLM - E. coli
+    ecoli_glm_fit <- glm(Escherichia_infection ~ ASV_abund + factor(DayRelativeToNearestHCT),
+                   data = df, family = binomial)
+    ecoli_glm_coef <- tryCatch(
+      coef(summary(ecoli_glm_fit))["ASV_abund", "Estimate"],
+      error = function(e) NA_real_
+    )
+    ecoli_glm_pval <- tryCatch(
+      coef(summary(ecoli_glm_fit))["ASV_abund", "Pr(>|z|)"],
+      error = function(e) NA_real_
+    )
+
+    # GLM - Enterococcus
+    enterococcus_glm_fit <- glm(Enterococcus_infection ~ ASV_abund + factor(DayRelativeToNearestHCT),
+                   data = df, family = binomial)
+    enterococcus_glm_coef <- tryCatch(
+      coef(summary(enterococcus_glm_fit))["ASV_abund", "Estimate"],
+      error = function(e) NA_real_
+    )
+    enterococcus_glm_pval <- tryCatch(
+      coef(summary(enterococcus_glm_fit))["ASV_abund", "Pr(>|z|)"],
+      error = function(e) NA_real_
+    )
+    
+    # GLMER
+    glmer_fit <- glm(Escherichia_infection ~ ASV_abund + factor(DayRelativeToNearestHCT) + factor(PatientID),
+                       data = df, family = binomial)
+    #glmer_coef <- coef(summary(glmer_fit))["ASV_abund", "Estimate"]
+    #glmer_pval <- coef(summary(glmer_fit))["ASV_abund", "Pr(>|z|)"]
+    
+    # Store results
+    asv_genera_bacteroides_species$ecoli_glm_coef[i] <- ecoli_glm_coef
+    asv_genera_bacteroides_species$ecoli_glm_pval[i] <- ecoli_glm_pval
+    asv_genera_bacteroides_species$enterococcus_glm_coef[i] <- enterococcus_glm_coef
+    asv_genera_bacteroides_species$enterococcus_glm_pval[i] <- enterococcus_glm_pval
+    #asv_genera_bacteroides_species$glmer_coef[i] <- glmer_coef
+    #asv_genera_bacteroides_species$glmer_pval[i] <- glmer_pval
+  }
+}
+
+# Adjust p-values to correct for multiple testing
+asv_genera_bacteroides_species$ecoli_glm_bonf_padj <- p.adjust(asv_genera_bacteroides_species$ecoli_glm_pval, method = "bonferroni")
+asv_genera_bacteroides_species$ecoli_glm_bh_padj <- p.adjust(asv_genera_bacteroides_species$ecoli_glm_pval, method = "BH")
+asv_genera_bacteroides_species$enterococcus_glm_bonf_padj <- p.adjust(asv_genera_bacteroides_species$enterococcus_glm_pval, method = "bonferroni")
+asv_genera_bacteroides_species$enterococcus_glm_bh_padj <- p.adjust(asv_genera_bacteroides_species$enterococcus_glm_pval, method = "BH")
+
+# Add the sample and patient counts for each ASV
+asv_genera_bacteroides_species <- asv_genera_bacteroides_species %>%
+  filter(!is.na(glm_coef)) %>%
+  left_join(asv_counts, by = "ASV") %>% 
+  arrange(ecoli_glm_bonf_padj)
+
+# Save the new table
+save(asv_genera_bacteroides_species, file = "analyses/processed_data/asv_genera_bacteroides_species_with_glm_glmer.RData")
+
+# Display the results
+arrange(asv_genera_bacteroides_species, ecoli_glm_bonf_padj)
+```
+
+#### Case-control matching dataset
+
+Next, I wanted to explicitly test if the relative abundance of *Bacteroides* was associated with a higher risk of BSI by *E. coli*. To do this, I created a matched case-control data set: case samples were the stool samples closest in time prior to a BSI event; controls were samples from patients without recorded BSI event chosen such that the patient and the clinical phase of the HCT therapy during which a sample was collected matched; I chose 4 controls for every case sample.
+
+```{r}
+# Find the day of first Escherichia infection for each patient
+first_ecoli_infection <- tblpatientday_clinical %>%
+  filter(Escherichia_infection == 1) %>%
+  group_by(PatientID) %>%
+  summarise(infection_day = min(DayRelativeToNearestHCT), .groups = "drop")
+
+# For each infected patient, find the SampleID in tblrel_filtered_asv with DayRelativeToNearestHCT closest to infection_day
+closest_samples <- tblrel_asv_meta %>%
+  inner_join(first_ecoli_infection, by = "PatientID") %>%
+  mutate(day_diff = infection_day - DayRelativeToNearestHCT) %>%
+  filter(day_diff >= 0) %>%  # Only keep samples before or on infection day
+  group_by(PatientID) %>%
+  slice_min(order_by = day_diff, n = 1, with_ties = FALSE) %>%
+  ungroup() %>%
+  select(PatientID, Sample, DayRelativeToNearestHCT, infection_day, day_diff) %>%
+  filter(day_diff <= 7) %>%
+  left_join(select(tblpatientday_clinical, PatientID, DayRelativeToNearestHCT, clinical_phase), by = c("PatientID", "DayRelativeToNearestHCT"))
+
+# Set clinical_phase to "Neutropenia" for Sample 2121F
+closest_samples$clinical_phase[closest_samples$Sample == "2121F"] <- "Neutropenia"
+
+# Get PatientIDs of infected patients to exclude them from controls
+infected_patients <- unique(closest_samples$PatientID)
+
+# Prepare uninfected samples with clinical_phase info
+uninfected_samples <- tblrel_asv_meta %>%
+  left_join(tblpatientday_clinical %>% select(PatientID, DayRelativeToNearestHCT, clinical_phase), 
+            by = c("PatientID", "DayRelativeToNearestHCT")) %>%
+  filter(
+    Escherichia_infection == FALSE,
+    !PatientID %in% infected_patients
+  )
+
+# For each sample in closest_samples, randomly select 4 matched controls by clinical_phase
+set.seed(1234)
+matched_case_controls <- closest_samples %>%
+  rowwise() %>%
+  mutate(
+    control_samples = list({
+      phase <- clinical_phase
+      uninfected_samples %>%
+        filter(clinical_phase == phase) %>%
+        sample_n(size = min(4, n()), replace = FALSE) %>%
+        select(PatientID, Sample, DayRelativeToNearestHCT, clinical_phase)
+    })
+  ) %>%
+  unnest(control_samples, names_sep = "_control") %>%
+  ungroup()
+
+# Create matched_case_control dataset
+case_control_data <- bind_rows(
+  closest_samples %>%
+    mutate(BSI = TRUE) %>%
+    select(PatientID, Sample, DayRelativeToNearestHCT, clinical_phase, BSI),
+  matched_case_controls %>%
+    mutate(BSI = FALSE) %>%
+     select(PatientID = control_samples_controlPatientID, 
+           Sample = control_samples_controlSample, 
+             DayRelativeToNearestHCT = control_samples_controlDayRelativeToNearestHCT, 
+             clinical_phase = control_samples_controlclinical_phase, 
+             BSI)
+  ) %>%
+  left_join(tblrel_asv_meta, by = c("PatientID", "Sample"))
+```
+
+I then prepared a version of the dataset where I split the merged the relative abundances of ASVs in three groups:
+
+  - *Bacteroides s. lat*: all ASVs classified as *Bacteroides* in the original dataset, which includes both *Bacteroides* and *Phocaeicola* species.
+  - *Bacteroides s. str.*: All ASVs classified as *Bacteroides* after removing the ones that matched full 16S sequences of *Phocaeicola*.
+  - *Phocaeicola*: All ASVs that matched full 16S sequences of *Phocaeicola*, plus ASV_6242, which was the only one originally classified as *Phocaeicola*.
+
+```{r}
+# Define the ASVs in each group_by
+bacteroides_slat_asvs <- asv_species_summary %>%
+  pull(asv)
+bacteroides_sstr_asvs <- asv_species_summary %>%
+  filter(!str_detect(species, "Phocaeicola") & mismatches <= 1) %>%
+  pull(asv)
+phocaeicola_asvs <- c(
+  asv_species_summary %>%
+    filter(str_detect(species, "Phocaeicola") & mismatches <= 1) %>%
+    pull(asv), 
+  "ASV_6242")
+
+# Add up the relative abundances by species groups
+case_control_data_merged_asvs <- case_control_data %>%
+  mutate(
+    Bacteroides_s_lat = {
+      cols <- intersect(paste0(bacteroides_slat_asvs, "_abund"), names(.))
+      if (length(cols) > 0) rowSums(select(., all_of(cols)), na.rm = TRUE) else 0
+    },
+    Bacteroides_s_str = {
+      cols <- intersect(paste0(bacteroides_sstr_asvs, "_abund"), names(.))
+      if (length(cols) > 0) rowSums(select(., all_of(cols)), na.rm = TRUE) else 0
+    },
+    Phocaeicola = {
+      cols <- intersect(paste0(phocaeicola_asvs, "_abund"), names(.))
+      if (length(cols) > 0) rowSums(select(., all_of(cols)), na.rm = TRUE) else 0
+    }
+  )
+```
+
+#### Logistic regression on case-control matched dataset
+
+Then, I fitted a logistic regression, which showed a significantly positive association between *Phocaeicola* or *Bacteroides s. lat* abundance and the risk of BSI:
+```{r}
+# Logistic regression - split
+case_control_bsi_split_glm <- glm(BSI ~ Bacteroides_s_str + Phocaeicola, data = case_control_data_merged_asvs, family = binomial)
+summary(case_control_bsi_split_glm)
+
+# Logistic regression - merged
+case_control_bsi_merged_glm <- glm(BSI ~ Bacteroides_s_lat, data = case_control_data_merged_asvs, family = binomial)
+summary(case_control_bsi_merged_glm)
+
+
+    # Boxplot comparing ASV_277_abund between BSI TRUE and FALSE, with Sample labels
+    ggplot(case_control_data_merged_asvs, aes(x = factor(BSI, levels = c(FALSE, TRUE), labels = c("No BSI", "BSI")), y = Phocaeicola, fill = factor(BSI))) +
+      geom_boxplot(outlier.shape = NA, alpha = 0.7) +
+      geom_jitter(width = 0.2, alpha = 0.4, size = 1) +
+      geom_text(aes(label = Sample), position = position_jitter(width = 0.2), size = 2, vjust = -0.5, check_overlap = TRUE) +
+      scale_fill_manual(values = c("gray70", "#EE2C2C")) +
+      labs(
+      x = "BSI Status",
+      y = "ASV_277 Abundance",
+      fill = "BSI"
+      ) +
+      custom_theme +
+      theme(legend.position = "none")
+```
+
+```{r}
+# Bayesian logistic regression using brms
+library(brms)
+library(BH)
+
+# Set priors: normal(0, 1) for coefficients, normal(-1.38, 0.01) for intercept (as in the paper)
+priors <- c(
+  set_prior("normal(-1.38, 0.01)", class = "Intercept"),
+  set_prior("normal(0, 1)", class = "b")
+)
+
+# Fit the model
+case_control_bsi_brm <- brm(
+  BSI ~ Bacteroides_s_lat,
+  data = case_control_data_merged_asvs,
+  family = bernoulli(link = "logit"),
+  prior = priors,
+  chains = 4, iter = 10000, warmup = 1000, seed = 123
+)
+
+# Summarize results
+summary(case_control_bsi_brm)
+```
+
+#### 
+
+### Cooccurrence
+
+```{r}
+# Transform the table into a binary presence-absence matrix
+binary_matrix_full <- tblrel_genus_meta %>%
+  select(ends_with("_abund")) %>%
+  mutate(across(everything(), ~ ifelse(. >= 0.001, 1, 0))) %>%
+  as.matrix()
+binary_matrix_infected <- tblrel_genus_meta %>%
+  filter(Escherichia_infection == TRUE) %>%
+  select(ends_with("_abund")) %>%
+  mutate(across(everything(), ~ ifelse(. >= 0.001, 1, 0))) %>%
+  as.matrix()
+
+# Calculate the cooccurrence matrix
+cooccurrence_matrix_full <- t(binary_matrix_full) %*% binary_matrix_full %>%
+  as.matrix()
+cooccurrence_matrix_infected <- t(binary_matrix_infected) %*% binary_matrix_infected %>%
+  as.matrix()
+
+# Frequency of Bacteroides and Escherichia in the samples
+bacteroides_freq_full <- cooccurrence_matrix_full["Bacteroides_abund", "Bacteroides_abund"]
+escherichia_freq_full <- cooccurrence_matrix_full["Escherichia-Shigella_abund", "Escherichia-Shigella_abund"]
+bacteroides_freq_infected <- cooccurrence_matrix_infected["Bacteroides_abund", "Bacteroides_abund"]
+escherichia_freq_infected <- cooccurrence_matrix_infected["Escherichia-Shigella_abund", "Escherichia-Shigella_abund"]
+
+# Frequencies of Bacteroides and Escherichia cooccurrence
+cooccurrence_freq_full <- cooccurrence_matrix_full["Bacteroides_abund", "Escherichia-Shigella_abund"]
+cooccurrence_freq_infected <- cooccurrence_matrix_infected["Bacteroides_abund", "Escherichia-Shigella_abund"]
+```
+
+ - *Escherichia* occurs in `r escherichia_freq_full` or `r (escherichia_freq_full/nrow(binary_matrix_full))*100`% of the samples, and in `r escherichia_freq_infected` or `r (escherichia_freq_infected/nrow(binary_matrix_infected))*100`% of the samples from patients who had positive blood cultures of *E. coli*
+ - *Bacteroides* occurs in `r bacteroides_freq_full` or `r (bacteroides_freq_full/nrow(binary_matrix_full))*100`% of the samples, and in `r bacteroides_freq_infected` or `r (bacteroides_freq_infected/nrow(binary_matrix_infected))*100`% of the samples from patients who had positive blood cultures of *E. coli*
+ - Bacteroides and *Escherichia* cooccur in `r cooccurrence_freq_full` samples, which corresponds to `r (cooccurrence_freq_full/escherichia_freq_full)*100`% of the samples with *Escherichia* and `r (cooccurrence_freq_full/bacteroides_freq_full)*100`% of the samples with *Bacteroides*.
+ - Bacteroides and *Escherichia* cooccur in `r cooccurrence_freq_infected` samples from infected patients, which corresponds to `r (cooccurrence_freq_infected/escherichia_freq_infected)*100`% of the samples from infected patients colonized with *Escherichia* and `r (cooccurrence_freq_infected/bacteroides_freq_infected)*100`% of the samples infected patients colonized with  with *Bacteroides*.
+
+
+
+
+
+
 ```{r}
 load("analyses/processed_data/tblpatientday_clinical.RData")
 tblpatientday_clinical <- tblpatientday_clinical %>%
@@ -272,118 +633,3 @@ patient_summary <- tblrel_genus_meta %>%
 
 glm(ever_infected ~ mean_bacteroides, data = patient_summary, family = binomial) %>% summary()
 ```
-
-### Quantifying association between Bacteroides and Escherichia abundance and infection risk
-
-```{r}
-# Load Libraries for modeling
-library(lme4)
-library(broom)
-
-# Table with ASVs and infection data
-tblrel_asv_meta <- prep_taxa_counts("asv")
-
-# Load the table with ASV identities
-load("analyses/processed_data/asv_genera_bacteroides_species.RData")
-
-# Gut-borne pathoges to filter
-gutborne_pathogens <- c("Enterococcus",
-                        "Escherichia-Shigella",
-                        "Klebsiella",
-                        "Enterobacter",
-                        "Citrobacter",
-                        "Salmonella",
-                        "<not present>")
-
-# Filter out ASVs from potential pathogens
-asv_genera_bacteroides_species <- asv_genera_bacteroides_species %>%
-  filter(!identity %in% gutborne_pathogens)
-
-# Prepare output columns
-asv_genera_bacteroides_species$glm_coef <- NA
-asv_genera_bacteroides_species$glm_pval <- NA
-asv_genera_bacteroides_species$glmer_coef <- NA
-asv_genera_bacteroides_species$glmer_pval <- NA
-
-# Loop through each ASV
-for (i in seq_len(nrow(asv_genera_bacteroides_species[1:2,]))) {
-  asv <- asv_genera_bacteroides_species$ASV[i]
-  asv_col <- paste0(asv, "_abund")
-  
-  # Only run if ASV_abund column exists
-  if (asv_col %in% colnames(tblrel_asv_meta)) {
-    # Prepare data
-    df <- tblrel_asv_meta %>%
-      select(Sample, PatientID, all_of(asv_col), DayRelativeToNearestHCT, Escherichia_infection) %>%
-      filter(between(DayRelativeToNearestHCT, -10, 25)) %>%
-      mutate(ASV_abund = .data[[asv_col]])
-    
-    df <- tblrel_asv_meta %>%
-      select(Sample, PatientID, all_of(asv_col), DayRelativeToNearestHCT, Escherichia_infection) %>%
-      filter(between(DayRelativeToNearestHCT, -10, 25)) %>%
-      group_by(PatientID) %>%
-      filter(n() >= 5) %>%
-      ungroup() %>%
-      mutate(ASV_abund = .data[[asv_col]])
-    
-    # GLM
-    glm_fit <- glm(Escherichia_infection ~ ASV_abund + factor(DayRelativeToNearestHCT),
-                   data = df, family = binomial)
-    glm_coef <- coef(summary(glm_fit))["ASV_abund", "Estimate"]
-    glm_pval <- coef(summary(glm_fit))["ASV_abund", "Pr(>|z|)"]
-    
-    # GLMER
-    glmer_fit <- glmer(Escherichia_infection ~ ASV_abund + factor(DayRelativeToNearestHCT) + (1 | PatientID),
-                       data = df, family = binomial)
-    glmer_coef <- coef(summary(glmer_fit))["ASV_abund", "Estimate"]
-    glmer_pval <- coef(summary(glmer_fit))["ASV_abund", "Pr(>|z|)"]
-    
-    # Store results
-    asv_genera_bacteroides_species$glm_coef[i] <- glm_coef
-    asv_genera_bacteroides_species$glm_pval[i] <- glm_pval
-    asv_genera_bacteroides_species$glmer_coef[i] <- glmer_coef
-    asv_genera_bacteroides_species$glmer_pval[i] <- glmer_pval
-  }
-}
-
-# Save the new table
-save(asv_genera_bacteroides_species, file = "analyses/processed_data/asv_genera_bacteroides_species_with_glm_glmer.RData")
-
-
-```
-
-### Cooccurrence
-
-```{r}
-# Transform the table into a binary presence-absence matrix
-binary_matrix_full <- tblrel_genus_meta %>%
-  select(ends_with("_abund")) %>%
-  mutate(across(everything(), ~ ifelse(. >= 0.001, 1, 0))) %>%
-  as.matrix()
-binary_matrix_infected <- tblrel_genus_meta %>%
-  filter(Escherichia_infection == TRUE) %>%
-  select(ends_with("_abund")) %>%
-  mutate(across(everything(), ~ ifelse(. >= 0.001, 1, 0))) %>%
-  as.matrix()
-
-# Calculate the cooccurrence matrix
-cooccurrence_matrix_full <- t(binary_matrix_full) %*% binary_matrix_full %>%
-  as.matrix()
-cooccurrence_matrix_infected <- t(binary_matrix_infected) %*% binary_matrix_infected %>%
-  as.matrix()
-
-# Frequency of Bacteroides and Escherichia in the samples
-bacteroides_freq_full <- cooccurrence_matrix_full["Bacteroides_abund", "Bacteroides_abund"]
-escherichia_freq_full <- cooccurrence_matrix_full["Escherichia-Shigella_abund", "Escherichia-Shigella_abund"]
-bacteroides_freq_infected <- cooccurrence_matrix_infected["Bacteroides_abund", "Bacteroides_abund"]
-escherichia_freq_infected <- cooccurrence_matrix_infected["Escherichia-Shigella_abund", "Escherichia-Shigella_abund"]
-
-# Frequencies of Bacteroides and Escherichia cooccurrence
-cooccurrence_freq_full <- cooccurrence_matrix_full["Bacteroides_abund", "Escherichia-Shigella_abund"]
-cooccurrence_freq_infected <- cooccurrence_matrix_infected["Bacteroides_abund", "Escherichia-Shigella_abund"]
-```
-
- - *Escherichia* occurs in `r escherichia_freq_full` or `r (escherichia_freq_full/nrow(binary_matrix_full))*100`% of the samples, and in `r escherichia_freq_infected` or `r (escherichia_freq_infected/nrow(binary_matrix_infected))*100`% of the samples from patients who had positive blood cultures of *E. coli*
- - *Bacteroides* occurs in `r bacteroides_freq_full` or `r (bacteroides_freq_full/nrow(binary_matrix_full))*100`% of the samples, and in `r bacteroides_freq_infected` or `r (bacteroides_freq_infected/nrow(binary_matrix_infected))*100`% of the samples from patients who had positive blood cultures of *E. coli*
- - Bacteroides and *Escherichia* cooccur in `r cooccurrence_freq_full` samples, which corresponds to `r (cooccurrence_freq_full/escherichia_freq_full)*100`% of the samples with *Escherichia* and `r (cooccurrence_freq_full/bacteroides_freq_full)*100`% of the samples with *Bacteroides*.
- - Bacteroides and *Escherichia* cooccur in `r cooccurrence_freq_infected` samples from infected patients, which corresponds to `r (cooccurrence_freq_infected/escherichia_freq_infected)*100`% of the samples from infected patients colonized with *Escherichia* and `r (cooccurrence_freq_infected/bacteroides_freq_infected)*100`% of the samples infected patients colonized with  with *Bacteroides*.

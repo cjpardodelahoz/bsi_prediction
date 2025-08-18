@@ -151,6 +151,7 @@ tblinfections <- suppressMessages(read_csv("data/allinfectionsSD.csv")) %>%
     pivot_wider(names_from = InfectiousAgent, values_from = flag, values_fill = 0) %>%
     select(-Day) %>%
     mutate()
+sexSD <- suppressMessages(read_csv("data/sexSD.csv"))
 
 # Add clinical data to patient-day table
 tblpatientday_clinical <- tblpatientday %>%
@@ -161,6 +162,7 @@ tblpatientday_clinical <- tblpatientday %>%
     left_join(tbldrug, by = c("PatientID", "DayRelativeToNearestHCT")) %>% # adding precomputed antibiotic flags
     mutate(across(all_of(antibiotics), ~replace_na(.x, 0))) %>% # fill missing antibiotic columns with 0s
     left_join(tblinfections, by = c("PatientID", "DayRelativeToNearestHCT")) %>% # Adding infections data
+    left_join(sexSD, by = c("PatientID" = "cmicId")) %>%
     mutate(across(all_of(colnames(tblinfections)[2:ncol(tblinfections)]), ~replace_na(.x, 0))) %>% # fill missing infections with 0s
     mutate(
         gutborne_infection = if_any(all_of(gutborne), ~ .x == 1),
@@ -177,6 +179,7 @@ tblpatientday_clinical <- tblpatientday %>%
             across(all_of(antibiotics), ~ factor(.x, levels = 0:1)),
             Staphylococcus_culture = factor(Staphylococcus_culture)) %>%
     select(PatientID,
+        sex,
         DayRelativeToNearestHCT,
         MaxTemperature,
         WBCtotal,

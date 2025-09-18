@@ -8,6 +8,7 @@ import math
 import pandas as pd
 import numpy as np
 import matplotlib.pyplot as plt
+from scipy.optimize import curve_fit
 
 def find_header_row(path: str):
     tmp = pd.read_excel(path, header=None, nrows=200)
@@ -72,6 +73,37 @@ def compute_mean_se(df: pd.DataFrame, cols: List[str]):
     se = sd / np.sqrt(n.replace(0, np.nan))
     return mean, se, n
 
+def logistic_growth(t, K, r, lag, y0):
+    # Four-parameter logistic growth model
+    return K / (1 + ((K - y0) / y0) * np.exp(-r * (t - lag)))
+
+def fit_logistic_growth(time, od):
+    # Remove NaNs
+    mask = ~np.isnan(time) & ~np.isnan(od)
+    t = np.array(time)[mask]
+    y = np.array(od)[mask]
+    if len(t) < 6 or np.any(y <= 0):
+        return np.nan, np.nan, np.nan, np.nan  # Not enough data or non-positive OD
+    # Initial guesses
+    y0 = np.min(y)
+    K_guess = np.max(y)
+    r_guess = 1.0
+    noise = np.std(y[:5])
+    lag_candidates = t[y > y0 + 2*noise]
+    lag_guess = lag_candidates[0] if len(lag_candidates) > 0 else t[0]
+    try:
+        popt, _ = curve_fit(
+            logistic_growth, t, y,
+            p0=[K_guess, r_guess, lag_guess, y0],
+            bounds=([0, 0, 0, 0], [np.inf, np.inf, np.max(t), np.inf]),
+            maxfev=10000
+        )
+        K, r, lag, y0_fit = popt
+        return r, K, lag, y0_fit
+    except Exception as e:
+        print(f"Logistic fit failed: {e}", file=sys.stderr)
+        return np.nan, np.nan, np.nan, np.nan
+
 def main():
     p = argparse.ArgumentParser(description="Plot OD600 growth curves from plate-reader .xlsx exports.")
     p.add_argument("xlsx", help="Path to Excel file.")
@@ -81,6 +113,7 @@ def main():
     p.add_argument("--outdir", default=".", help="Output directory.")
     p.add_argument("--time-as-minutes", action="store_true", help="Label x-axis as minutes if in seconds.")
     p.add_argument("--suffix", default="", help="Suffix to append to output filenames.")
+    p.add_argument("--getparameters", action="store_true", help="Fit logistic growth model and output parameters to CSV. Also plots log-scale curves.")
     args = p.parse_args()
 
     df = read_plate_data(args.xlsx)
@@ -103,6 +136,10 @@ def main():
         for w in df_wells.columns:
             groups[w] = [w]
     os.makedirs(args.outdir, exist_ok=True)
+
+    # Prepare for parameter output
+    param_rows = []
+
     if args.separate_plots:
         for name, wells in groups.items():
             mean, se, n = compute_mean_se(df_wells, wells)
@@ -110,12 +147,30 @@ def main():
             ax.plot(time, mean, label=name)
             ax.fill_between(time, mean-se, mean+se, alpha=0.25)
             ax.set_xlabel("Time (hours)")
-            ax.set_ylabel("OD600 (blank subtracted)")
+            ax.set_ylabel("OD600")
             ax.set_title(name)
             ax.legend(); ax.grid(True)
             ax.set_xticks(np.arange(0, max(time)+2, 2))
             fname = os.path.join(args.outdir, f"{name.replace(' ','_')}{('_'+args.suffix) if args.suffix else ''}.png")
             fig.savefig(fname, dpi=300); plt.close(fig)
+
+            # Log-scale plot and parameter extraction
+            if args.getparameters:
+                fig_log, ax_log = plt.subplots(figsize=(8,5))
+                ax_log.plot(time, mean, label=name)
+                ax_log.fill_between(time, mean-se, mean+se, alpha=0.25)
+                ax_log.set_yscale('log')
+                ax_log.set_xlabel("Time (hours)")
+                ax_log.set_ylabel("OD600 (log scale)")
+                ax_log.set_title(name + " (log scale)")
+                ax_log.legend(); ax_log.grid(True)
+                ax_log.set_xticks(np.arange(0, max(time)+2, 2))
+                fname_log = os.path.join(args.outdir, f"{name.replace(' ','_')}{('_'+args.suffix) if args.suffix else ''}_log.png")
+                fig_log.savefig(fname_log, dpi=300); plt.close(fig_log)
+
+                r, K, lag, y0_fit = fit_logistic_growth(time, mean)
+                param_rows.append({'grouping': name, 'r': r, 'K': K, 'lag': lag, 'y0': y0_fit})
+
     else:
         fig, ax = plt.subplots(figsize=(10,6))
         for name, wells in groups.items():
@@ -123,12 +178,36 @@ def main():
             ax.plot(time, mean, label=name)
             ax.fill_between(time, mean-se, mean+se, alpha=0.25)
         ax.set_xlabel("Time (hours)")
-        ax.set_ylabel("OD600 (blank subtracted)")
+        ax.set_ylabel("OD600")
         ax.set_title(os.path.basename(args.xlsx))
         ax.legend(); ax.grid(True)
         ax.set_xticks(np.arange(0, max(time)+2, 2))
         fname = os.path.join(args.outdir, f"{os.path.splitext(os.path.basename(args.xlsx))[0]}{('_'+args.suffix) if args.suffix else ''}.png")
         fig.savefig(fname, dpi=300); plt.close(fig)
+
+        # Log-scale plot and parameter extraction
+        if args.getparameters:
+            fig_log, ax_log = plt.subplots(figsize=(10,6))
+            for name, wells in groups.items():
+                mean, se, n = compute_mean_se(df_wells, wells)
+                ax_log.plot(time, mean, label=name)
+                ax_log.fill_between(time, mean-se, mean+se, alpha=0.25)
+                r, K, lag, y0_fit = fit_logistic_growth(time, mean)
+                param_rows.append({'grouping': name, 'r': r, 'K': K, 'lag': lag, 'y0': y0_fit})
+            ax_log.set_yscale('log')
+            ax_log.set_xlabel("Time (hours)")
+            ax_log.set_ylabel("OD600 (log scale)")
+            ax_log.set_title(os.path.basename(args.xlsx) + " (log scale)")
+            ax_log.legend(); ax_log.grid(True)
+            ax_log.set_xticks(np.arange(0, max(time)+2, 2))
+            fname_log = os.path.join(args.outdir, f"{os.path.splitext(os.path.basename(args.xlsx))[0]}{('_'+args.suffix) if args.suffix else ''}_log.png")
+            fig_log.savefig(fname_log, dpi=300); plt.close(fig_log)
+
+    # Output parameters to CSV
+    if args.getparameters and param_rows:
+        param_df = pd.DataFrame(param_rows)
+        param_csv = os.path.join(args.outdir, f"{os.path.splitext(os.path.basename(args.xlsx))[0]}{('_'+args.suffix) if args.suffix else ''}_growth_parameters.csv")
+        param_df.to_csv(param_csv, index=False)
 
 if __name__ == "__main__":
     main()

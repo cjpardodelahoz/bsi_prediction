@@ -666,6 +666,9 @@ asv_species_summary <- asv_to_meta_map %>%
 
 # View the resulting table
 print(asv_species_summary)
+
+# Save the species summary as an .RData file
+save(asv_species_summary, file = "analyses/processed_data/asv_species_summary.RData")
 ```
 
 ### Gnerating ASV identity table

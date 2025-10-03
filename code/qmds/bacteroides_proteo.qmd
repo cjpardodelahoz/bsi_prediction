@@ -130,6 +130,99 @@ ggplot(scatter_data, aes(x = Bacteroides_abund, y = `Escherichia-Shigella_abund`
 ggsave("document/plots/rel_bacteroides_escherichia.pdf", width = 3.6, height = 3.6)
 ```
 
+### BSI pathogen frequency
+
+For one of the figures, I prepared a stacked bar plot of the frequency of BSIs caused by different pathogens. I considered only the timeframe between -10 and 50 days relative to the HCT:
+
+```{r}
+# Pathogen groups
+gutborne <- c("Enterococcus_Faecium_Vancomycin_Resistant",
+                "Escherichia",
+                "Klebsiella_Pneumoniae",
+                "Enterobacter",
+                "Citrobacter",
+                "Enterococcus_Faecium",
+                "Enterococcus_Faecalis",
+                "Klebsiella",
+                "Pseudomonas",
+                "Stenotrophomonas_Maltophilia",
+                "Enterococcus_Vancomycin_Resistant")
+enterococcus <- c("Enterococcus_Faecium_Vancomycin_Resistant",
+                "Enterococcus_Faecium",
+                "Enterococcus_Faecalis",
+                "Enterococcus_Vancomycin_Resistant")
+klebsiella <- c("Klebsiella_Pneumoniae",
+                "Klebsiella")
+
+# Load transplant metadata
+tblhctmeta <- read_csv("data/tblhctmeta.csv")
+
+# Load infections data
+tblinfections <- read_csv("data/allinfectionsSD.csv")
+
+# Filter the infections data to only include patients present in tblhctmeta
+filtered_infections <- tblinfections %>%
+    filter(PatientID %in% tblhctmeta$PatientID)
+
+# Add the DayRelativeToNearestHCT
+gutborne_infections <- filtered_infections %>%
+  rowwise() %>%
+  mutate(
+    DayRelativeToNearestHCT = calculate_day_relative_to_nearest_hct(PatientID, Day, tblhctmeta),
+    genus = case_when(
+    InfectiousAgent %in% enterococcus ~ "Enterococcus",
+    InfectiousAgent %in% klebsiella ~ "Klebsiella",
+    TRUE ~ InfectiousAgent
+    )
+  ) %>%
+  ungroup() %>%
+  filter(between(DayRelativeToNearestHCT, -10, 50) & InfectiousAgent %in% gutborne)
+
+  # Tally number of unique patients with infection per genus
+  genus_patient_tally <- gutborne_infections %>%
+    distinct(PatientID, genus) %>%
+    count(genus, name = "n_patients") %>%
+    arrange(n_patients) # ascending order for stacking (lowest at top, highest at bottom)
+
+  # Set factor levels so highest frequency is at the bottom of the stack
+  genus_patient_tally$genus <- factor(genus_patient_tally$genus, levels = genus_patient_tally$genus)
+
+  genus_patient_tally
+  # Define fill colors: Enterococcus green, Escherichia red, others as different shades of red
+  genus_colors <- c(
+    "Enterococcus" = "#1c8c3a",
+    "Escherichia" = "#fc4242",
+    "Klebsiella" = "#fc6060",
+    "Enterobacter" = "#fa9393",
+    "Citrobacter" = "#FBBDBD",
+    "Pseudomonas" = "#f77c7c",
+    "Stenotrophomonas_Maltophilia" = "#faa2a2"
+  )
+
+# Convert patietn counts to frequency
+genus_patient_tally <- genus_patient_tally %>%
+  mutate(freq = n_patients / sum(n_patients))
+
+# Stacked bar plot (one bar, stacked by genus, y axis as frequency)
+ggplot(genus_patient_tally, aes(x = 1, y = freq, fill = genus)) +
+  geom_bar(stat = "identity", width = 0.6) +
+  scale_fill_manual(values = genus_colors, na.value = "#FDEAEA") +
+  labs(
+    x = NULL,
+    y = "BSI frequency",
+    fill = "Genus"
+  ) +
+  custom_theme +
+  scale_y_continuous(labels = scales::percent_format(accuracy = 1), limits = c(0, 1)) +
+  theme(
+    axis.text.x = element_blank(),
+    axis.ticks.x = element_blank(),
+    panel.grid.major.x = element_blank()
+  )
+
+# Save the plot
+ggsave("document/plots/patient_tally_by_genus.pdf", width = 3.8, height = 4)
+
 ### Relative abundance dynamics of *Bacteroides* and pathogenic Proteobacteria
 
 We are going to visualize the change in relative abundance of *Bacteroides* and pathogenic Proteobacteria over time in the allo-HCT patient dataset. We want to determine if the dynamics are different in patients that suffered infections by the Proteobacteria compared to patients who did not get infected. For pathogens, we already expect their abundance increases and we are mostly replicating some of the results of Liao et al, 2021.
@@ -306,6 +399,8 @@ I then prepared a version of the dataset where I split the merged the relative a
   - *Phocaeicola*: All ASVs that matched full 16S sequences of *Phocaeicola*, plus ASV_6242, which was the only one originally classified as *Phocaeicola*.
 
 ```{r}
+# Load the species summary
+load("analyses/processed_data/asv_species_summary.RData")
 # Define the ASVs in each group_by
 bacteroides_slat_asvs <- asv_species_summary %>%
   pull(asv)

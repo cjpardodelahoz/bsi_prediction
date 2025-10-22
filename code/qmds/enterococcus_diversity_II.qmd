@@ -1,0 +1,145 @@
+---
+title: "*Enterococcus* diversity and BSI risk"
+engine: knitr
+format:
+  html:
+    code-fold: true
+    code-summary: "Show the code"
+---
+
+We are now going to expand the exploration of *Enterococcus* diversity within patients with *E. faecium* domination to include all the metagenomes available at MSKCC, including thousands that are not public, and find preliminary links to BSI risk. I have the following goals:
+
+- Quantify the distribution of patient samples with dominations and BSIs that have available, unpublished, metagenomic data.
+
+- Assemble the metagenomes and obtain high quality *E. faecium* MAGs from all those samples.
+
+- Quantify strain-level diversity.
+    - Phylogeny of HQ MAGs
+    - ST assignments
+    - Strain sharing quantification
+
+- Test for potential lineages/STs/Strains enriched in patients with BSI
+
+## Distribution of patient samples with dominations in extended metagenomic data
+
+First, we retrieve the table with all the `lilac` paths to the raw fastqs as a proxy for samples with available megagenomic data:
+
+```{r}
+# Get the table with all metagenomic libraries available
+vdbR::connect_database()
+vdbR::get_table_from_database("rawfastq")
+
+# Add column with Sample ids
+rawfastq <- rawfastq %>%
+    mutate(Sample = str_extract(path, "(?<=Sample_)(.*?)(?=_IGO)"))
+```
+
+Let's now get a list of all the samples for which there are metagenomes available in Isabl, including samples form patients that were dominated or infected by *E. faecium*. Keep in mind that all but one of the cases where BSI was not preceded by domination in the data are actually cases where we don't have microbiome data in the days preceding the infection, but they likely had domination. 
+
+Here, I had to cross-reference the SD paper data with a table from Angel because some of the sample nomenclature was different between the paper, the isabl record, and the `rawfastq` table:
+
+```{r}
+# Load required libraries and functions
+suppressMessages(library(tidyverse))
+source("code/rfunctions/data_helpers.r")
+
+# Prepare genus-level counts
+tblrel_genus_meta <- prep_taxa_counts("genus")
+
+# Summarize patients with Enterococcus dominations and infections
+summary_data <- tblrel_genus_meta %>%
+  group_by(PatientID) %>%
+  summarize(
+    ever_dominated = any(Enterococcus_abund >= 0.10, na.rm = TRUE),
+    ever_infected = any(Enterococcus_infection == TRUE, na.rm = TRUE)
+  )
+
+# Identify PatientIDs who were ever dominated or infected
+enterococcus_target_patients <- summary_data %>%
+  filter(ever_dominated | ever_infected) %>%
+  pull(PatientID)
+
+# Get Sample IDs from tblrel_genus_meta for those patients
+enterococcus_target_samples <- tblrel_genus_meta %>%
+  filter(PatientID %in% enterococcus_target_patients) %>%
+  pull(Sample)
+
+# Load records found by Angel for which I have 16S data and metadata
+angel_records <- read_csv("misc_files/enterococcus_diversity/22_samples.csv") %>%
+    filter(in_isabl & sampleid %in% enterococcus_target_samples) %>%
+    pull(sampleid)
+
+# Samples relevant to Enterococcus with metagenomes, including Angel records, no duplicates
+enterococcus_sequenced_samples <- union(
+    rawfastq %>%
+        filter(Sample %in% enterococcus_target_samples) %>%
+        distinct(Sample) %>%
+        pull(Sample),
+    angel_records
+)
+
+# All samples from the SD paper with metagenoms
+all_target_samples <- union(
+    tblrel_genus_meta %>%
+        filter(Sample %in% rawfastq$Sample) %>%
+        pull(Sample),
+    angel_records
+)
+
+# Write all_target_samples to a file as a single line, comma-separated, no quotes
+writeLines(paste(all_target_samples, collapse = ","), "misc_files/enterococcus_diversity/all_target_samples.txt")
+```
+
+We now get the paths to the host-depleted reads for all these samples:
+
+```{bash, eval=FALSE}
+# Activate isabl conda
+conda activate /usersoftware/collab004/conda/isablprod
+
+# Set env variables
+export ISABL_CLIENT_ID=1
+export ISABL_API_URL="https://isabl.microbiome.mskcc.org/api/v1"
+
+# Load sample names to variable
+#ALL_TARGET_SAMPLES=$(cat misc_files/enterococcus_diversity/all_target_samples.txt | cut -d ',' -f 1,2)
+ALL_TARGET_SAMPLES=$(cat misc_files/enterococcus_diversity/all_target_samples.txt)
+
+# Get table with lilac paths to preprocessed reads
+isabl get-metadata analyses \
+  -fi application.pk 43 \
+  -fi targets.sample.identifier.in ${ALL_TARGET_SAMPLES} \
+  --field pk \
+  --field targets.sample.identifier \
+  --field results.fq1 \
+  --field results.fq2 \
+  > misc_files/enterococcus_diversity/all_target_samples_paths.txt
+
+# Get list of unique sample identifiers with available host-depleted reads
+cat misc_files/enterococcus_diversity/all_target_samples_paths.txt | cut -f 2 | sort | uniq > misc_files/enterococcus_diversity/all_target_samples_hostdepleted.txt
+```
+
+Let's check which of the samples do not have available host-depleted reads, which Mirae and Nick will run through the pipeline and I can include them later:
+
+```{r}
+# Load list of samples with host-depleted reads
+all_samples_hostdepleted <- scan("misc_files/enterococcus_diversity/all_target_samples_hostdepleted.txt", what = "character") %>%
+    str_remove_all("")
+
+samples_missing <- setdiff(all_target_samples, all_samples_hostdepleted)
+writeLines(samples_missing, "misc_files/enterococcus_diversity/samples_missing_hostdeplet.txt")
+```
+
+I also noticed that some of the samples have multiple records of host depletion outputs, so I checked which are duplicated:
+
+```{bash, eval=FALSE}
+# Find duplicated sample names in the file
+cut -f2 misc_files/enterococcus_diversity/all_target_samples_paths.txt | sort | uniq -d
+```
+
+After talking with Mirae, it seems these cases correspond to duplicated outputs from the same library, so I will only take one record from each sample (2,077 unique) for the assembly pipeline.
+
+I preprocessed the reads with fastp and generated a metagenomic assembly with metaSPAdes for each metagenomic library:
+
+```{bash, eval=FALSE}
+sbatch code/scripts/enterococcus_diversity/metaspades_isabl1.sh
+```

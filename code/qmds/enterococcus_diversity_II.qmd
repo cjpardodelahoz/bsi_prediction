@@ -187,3 +187,94 @@ These files are needed to arrange assembly concatenation and read mapping. After
 ```{bash, eval=FALSE}
 sbatch code/scripts/enterococcus_diversity/vamb_multi_isabl1.sh
 ```
+
+Then I compiled the bins from VAMB:
+
+```{bash, eval=FALSE}
+SRC_BASE="analyses/enterococcus_diversity/binning/short/isabl1/vamb/multi"
+DEST_BASE="analyses/enterococcus_diversity_II/binning/short/isabl1/vamb/multi_bins"
+
+mkdir -p "${DEST_BASE}"
+
+find "${SRC_BASE}" -mindepth 1 -maxdepth 1 -type d | while read -r patient_dir; do
+    sample=$(basename "${patient_dir}")
+    bins_dir="${patient_dir}/vambout/bins"
+    if [ -d "${bins_dir}" ]; then
+        for fna in "${bins_dir}"/*.fna; do
+            [ -e "$fna" ] || continue
+            bin_name=$(basename "$fna")
+            cp "$fna" "${DEST_BASE}/${sample}_${bin_name}"
+        done
+    fi
+done
+```
+
+And I classified the bins using GTDB:
+
+```{bash, eval=FALSE}
+sbatch code/scripts/enterococcus_diversity_II/isabl1_gtdb.sh
+```
+
+With the classification results, I compiled the *Enterococcus* MAGs:
+
+```{bash, bash=FALSE}
+# Define input and output paths
+GTDB_FILES=("analyses/enterococcus_diversity_II/binning/short/isabl1/gtdb/gtdbtk.bac120.summary.tsv")
+BIN_DIRS=("analyses/enterococcus_diversity_II/binning/short/isabl1/vamb/multi_bins")
+OUTPUT_DIR="analyses/enterococcus_diversity_II/genomes/mags/isabl1"
+
+# Create the output directory if it doesn't exist
+mkdir -p ${OUTPUT_DIR}
+# Loop through GTDB files
+for i in "${!GTDB_FILES[@]}"; do
+  gtdb_file="${GTDB_FILES[$i]}"
+  bin_dir="${BIN_DIRS[$i]}"
+  
+  # Extract filenames of bins classified in the family Bacteroidaceae and copy them
+  awk -F'\t' 'NR > 1 && $2 ~ /g__Enterococcus/ {print $1}' "${gtdb_file}" | while read -r bin_file; do
+    full_path="${bin_dir}/${bin_file}.fna"
+    if [[ -f ${full_path} ]]; then
+      cp "${full_path}" "${OUTPUT_DIR}/"
+    else
+      echo "File ${full_path} not found, skipping..."
+    fi
+  done
+done
+```
+
+And I got completeness and contamination estimates for those with CheckM2:
+
+```{bash, eval=FALSE}
+sbatch code/scripts/enterococcus_diversity_II/enterococcus_isabl1_checkm2.sh
+```
+
+With the classifications and the CheckM2 results, I selected the nearly complete (>95% completeness, <5% contamination) *Enterococcus faecium* mags:
+
+```{r, eval=FALSE}
+# Load required library and custom functions
+suppressMessages(library(tidyverse))
+
+# Load and merge GTBD results
+meta_gtdb <- suppressMessages(read_tsv("analyses/enterococcus_diversity_II/binning/short/isabl1/gtdb/gtdbtk.bac120.summary.tsv"))
+
+# Load CheckM2 results
+checkm <- suppressMessages(read_tsv("analyses/enterococcus_diversity_II/genomes/checkm2/isabl1/quality_report.tsv"))
+
+# Compile E. faecium NC MAG data
+efaecium_mag_data <- checkm %>%
+  mutate(binning_strategy = case_when(
+            str_detect(Name, "single") ~ "single",
+            str_detect(Name, "multi") ~ "multi"
+          ),
+          sample = str_split(Name, "_", simplify = TRUE)[, 2]
+        ) %>%
+  left_join(meta_gtdb, by = c("Name" = "user_genome")) %>%
+  mutate(species = str_remove(classification, ".*s__")) %>%
+  filter(Completeness >= 95 & Contamination <= 5 & str_detect(species, "Enterococcus_B faecium")) %>%
+  group_by(species, sample) %>%
+    slice_max(order_by = Completeness, n = 1, with_ties = FALSE) %>%
+    ungroup()
+
+# Print list of paths to NC MAGs for pangenome analysis
+write(paste0("analyses/enterococcus_diversity_II/genomes/mags/", efaecium_mag_data$Name, ".fna"), "analyses/enterococcus_diversity/genomes/mags/efaecium_nc_isabl1.txt")
+```

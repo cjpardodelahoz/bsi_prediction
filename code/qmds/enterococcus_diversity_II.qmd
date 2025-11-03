@@ -138,8 +138,52 @@ cut -f2 misc_files/enterococcus_diversity/all_target_samples_paths.txt | sort | 
 
 After talking with Mirae, it seems these cases correspond to duplicated outputs from the same library, so I will only take one record from each sample (2,077 unique) for the assembly pipeline.
 
+## Metagenome assembly and binning
+
+### metaSPAdes assembly
+
 I preprocessed the reads with fastp and generated a metagenomic assembly with metaSPAdes for each metagenomic library:
 
 ```{bash, eval=FALSE}
 sbatch code/scripts/enterococcus_diversity/metaspades_isabl1.sh
+```
+
+Some of the assemblies failed due to memory issues, but I will continue working with the 2022 that did work. This generates the list of samples with succesful assemblies:
+
+```{bash, eval=FALSE}
+find analyses/enterococcus_diversity/metagenomes/assembly/metaspades -type f -name contigs.fasta \
+  | cut -d'/' -f6 \
+  | sort > misc_files/enterococcus_diversity/metaspades_successful_samples.txt
+```
+
+### Multi-sample binning with VAMB
+
+I generated the files with the list of samples sequenced with metagenomes for each patient (565): 
+
+```{r, eval=FALSE}
+# Load list of successful sample IDs
+successful_samples <- read_lines("misc_files/enterococcus_diversity/metaspades_successful_samples.txt")
+
+# Filter tblrel_genus_meta for those samples
+patient_samples <- tblrel_genus_meta %>%
+  filter(Sample %in% successful_samples) %>%
+  select(PatientID, Sample) %>%
+  distinct()
+
+# Create directory for patient sample lists
+dir.create("analyses/enterococcus_diversity/binning/short/isabl1/patient_samples", recursive = TRUE, showWarnings = FALSE)
+
+# Save SampleIDs for each PatientID to separate .txt files
+unique_patient_ids <- unique(patient_samples$PatientID)
+for (patient_id in unique_patient_ids) {
+  sample_ids <- patient_samples$Sample[patient_samples$PatientID == patient_id]
+  file_path <- paste0("analyses/enterococcus_diversity/binning/short/isabl1/patient_samples/", patient_id, ".txt")
+  writeLines(sample_ids, file_path)
+}
+```
+
+These files are needed to arrange assembly concatenation and read mapping. After that, I concatenated the assemblies from each patient, mapped the reads, and ran multi-sample VAMB:
+
+```{bash, eval=FALSE}
+sbatch code/scripts/enterococcus_diversity/vamb_multi_isabl1.sh
 ```

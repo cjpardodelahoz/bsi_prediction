@@ -248,7 +248,7 @@ And I got completeness and contamination estimates for those with CheckM2:
 sbatch code/scripts/enterococcus_diversity_II/enterococcus_isabl1_checkm2.sh
 ```
 
-With the classifications and the CheckM2 results, I selected the nearly complete (>95% completeness, <5% contamination) *Enterococcus faecium* mags:
+With the classifications and the CheckM2 results, I selected the 671 nearly complete (>95% completeness, <5% contamination) *Enterococcus faecium* mags:
 
 ```{r, eval=FALSE}
 # Load required library and custom functions
@@ -276,5 +276,280 @@ efaecium_mag_data <- checkm %>%
     ungroup()
 
 # Print list of paths to NC MAGs for pangenome analysis
-write(paste0("analyses/enterococcus_diversity_II/genomes/mags/", efaecium_mag_data$Name, ".fna"), "analyses/enterococcus_diversity/genomes/mags/efaecium_nc_isabl1.txt")
+write(paste0("analyses/enterococcus_diversity_II/genomes/mags/isabl1/", efaecium_mag_data$Name, ".fna"), "analyses/enterococcus_diversity_II/genomes/mags/efaecium_nc_isabl1.txt")
+```
+
+## *E. faecium* phylogeny and ST inference
+
+### Phylogeny with Lebreton et al 2013 reference
+
+The phylogeny will include the isabl1 NC mags and the genomes from Lebreton et al as a reference. Let's start by getting a list of all genomes included:
+
+```{bash, eval=FALSE}
+# Paths
+NC_MAGS="analyses/enterococcus_diversity_II/genomes/mags/efaecium_nc_isabl1.txt"
+PHYLO_DIR="analyses/enterococcus_diversity_II/phylogenetics/isabl1_plus_lebreton"
+LEBRETON_DIR="analyses/enterococcus_diversity/genomes/lebreton_2013"
+LEBRETON_FASTA_DIR="analyses/enterococcus_diversity/genomes/lebreton_2013/fasta"
+
+# File with paths to Lebreton genomes
+ls -d $LEBRETON_FASTA_DIR/*.fna > ${LEBRETON_DIR}/genome_paths.txt
+
+# Driectory for phylogenetic analyses
+mkdir -p ${PHYLO_DIR}
+
+# List of genomes included in phylogenetic analyes
+cat ${NC_MAGS} ${LEBRETON_DIR}/genome_paths.txt > ${PHYLO_DIR}/genome_list.txt
+```
+
+And then I ran ggCaller to get a core genome alignment and an NJ tree:
+
+```{bash, eval=FALSE}
+sbatch code/scripts/enterococcus_diversity_II/ggcaller_align_isabl1.sh
+rm analyses/enterococcus_diversity_II/genomes/mags/isabl1/*.fmp
+```
+
+### ST inference
+
+I classified the MAGs into the STs scheme defined by [Homan et al. 2002](https://journals.asm.org/doi/10.1128/jcm.40.6.1963-1971.2002) using the `mlst` software:
+
+```{bash, eval=FALSE}
+sbatch code/scripts/enterococcus_diversity_II/mlst_isabl1.sh
+```
+
+### Visualizing *E. faecium* diversity and BSI incidence
+
+Let's first compile all the metadata for these MAGs
+
+```{r, eval=FALSE}
+# Load and merge GTBD results
+meta_gtdb <- suppressMessages(read_tsv("analyses/enterococcus_diversity_II/binning/short/isabl1/gtdb/gtdbtk.bac120.summary.tsv"))
+
+# Load CheckM2 results
+checkm <- suppressMessages(read_tsv("analyses/enterococcus_diversity_II/genomes/checkm2/isabl1/quality_report.tsv"))
+
+# Load MLST classifications
+mlst_2002 <- read.csv("analyses/enterococcus_diversity_II/genomes/mlst/mlst_2002_isabl1.csv", header = FALSE, fill = TRUE)
+colnames(mlst_2002) <- c("genome_path",
+                          "scheme",
+                          "ST",
+                          paste0("allele_", seq(1:7))
+                          )
+mlst_2002 <- mlst_2002 %>%
+  mutate(genome = tools::file_path_sans_ext(basename(genome_path)))
+
+
+# Compile MAG data
+enterococcus_mag_data <- checkm %>%
+  left_join(meta_gtdb, by = c("Name" = "user_genome")) %>%
+  left_join(mlst_2002, by = c("Name" = "genome")) %>%
+  mutate(species = str_remove(classification, ".*s__")) %>%
+  filter(Completeness >= 70 & Contamination <= 5 & str_detect(classification, "g__Enterococcus"))
+
+# Load Lebreton metadata
+lebreton_metadata <- suppressMessages(
+  read_csv("data/lebreton_et_al_2013_genomes.csv") %>%
+    mutate(tiplabel = str_remove(Accession, "\\.1"))
+)
+```
+
+And now we plot different versions of the NJ tree to highlight:
+
+1. Main clades and and distribution of hospital-associated *E. faecium. Note that in this version, there are many MSK strains in clade A2. Does
+
+```{r}
+# Load phylogenetics packages
+suppressMessages(library(ape))
+suppressMessages(library(ggtree))
+suppressMessages(library(ggtreeExtra))
+suppressMessages(library(treeio))
+
+# Load the NJ tree
+lebreton_plus_mags_tree <- read.tree("analyses/enterococcus_diversity_II/phylogenetics/isabl1_plus_lebreton/ggcaller/core_tree_NJ.nwk")
+
+# Remove single quotation marks from tip labels
+lebreton_plus_mags_tree$tip.label <- gsub("'", "", lebreton_plus_mags_tree$tip.label)
+
+# Root the tree with Clade B
+outgroup <- lebreton_metadata %>% filter(Clade == "B") %>% pull(tiplabel)
+lebreton_plus_mags_tree <- root(lebreton_plus_mags_tree, outgroup = outgroup, resolve.root = TRUE)
+
+# MAG source metadata
+mag_source_data <- enterococcus_mag_data %>%
+  filter(Name %in% lebreton_plus_mags_tree$tip.label) %>%
+  mutate(tiplabel = Name,
+    source = "MSK") %>%
+  select(tiplabel, source)
+
+# Lebreton source metadata
+hospital_categories <- c("Hosp_Feces", "Clinical Isolate", "Hospital Surveillance", "Hospital Outbreak", "Hospital Unknown")
+lebreton_source_data <- lebreton_metadata %>%
+  mutate(source = case_when(Category %in% hospital_categories ~ "Hospital",
+                            Category == "Non-hospitalized individual" ~ "Human commensal",
+                            .default = Category)) %>%
+  select(tiplabel, source)
+
+# Compile source metadata and add infection data
+source_data <- bind_rows(mag_source_data, lebreton_source_data) %>%
+  mutate(
+    PatientID = case_when(
+      source != "MSK" ~ NA_character_,
+      str_detect(tiplabel, "pt") ~ stringr::word(tiplabel, 1, -4, sep = "_"),
+      TRUE ~ stringr::word(tiplabel, 1, sep = "_")
+    )
+  ) %>%
+  left_join(summary_data, by = "PatientID")
+
+clade_a1_node <- MRCA(lebreton_plus_mags_tree, c("GCF_000322425", "GCF_000239095"))
+
+# Merge tree tip labels with source data
+tree_data_main <- as_tibble(lebreton_plus_mags_tree) %>%
+  left_join(source_data, by = c("label" = "tiplabel"))
+
+# Define colors and shapes for sources
+source_colors <- c(
+  "MSK" = "#f4a261",          # Warm orange
+  "Hospital" = "#e63946",     # Deep red
+  "Human commensal" = "#2a9d8f", # Teal green
+  "Animal" = "#89c2d9",       # Light blue
+  "Other" = "gray50"          # Neutral gray
+)
+source_shapes <- c("MSK" = 16, "Hospital" = 16, "Human commensal" = 16, "Animal" = 16, "Other" = 16)
+
+# Plot the tree with tip shapes and colors
+ggtree(lebreton_plus_mags_tree, layout = "circular") %<+% tree_data_main +
+  geom_tippoint(aes(color = source, shape = source), size = 3) +
+  scale_color_manual(values = source_colors) +
+  scale_shape_manual(values = source_shapes) +
+  geom_hilight(node = clade_a1_node, fill = "gray75", alpha = 0.4, to.bottom = T) +
+  geom_cladelab(node = clade_a1_node, label = "A1", barsize = 0, fontsize = 8, offset.text = 6000) +
+  geom_strip(taxa1 = "GCF_000322285", taxa2 = "GCF_000321765",
+              barsize = 2,
+              label = "A2",
+              offset = 1000,
+              offset.text = 3000,
+              fontsize = 8) +
+  geom_strip(taxa1 = "GCF_000157655", taxa2 = "GCF_000322145",
+              barsize = 2,
+              label = "B",
+              offset = 4000,
+              offset.text = 3000,
+              fontsize = 8,
+              align = F) +
+  theme(legend.position = "right")
+
+# Save the plot
+#ggsave("document/plots/lebreton_plus_mags_main.pdf")
+```
+
+2. Clade A1 highlighting the STs:
+
+```{r}
+# Clade A1 taxa
+clade_a1_tips <- c(filter(lebreton_metadata, Clade == "A1") %>% pull(tiplabel), pull(mag_source_data, tiplabel))
+
+# Prune the tree to keep only clade A1 tips
+clade_a1_tree <- keep.tip(lebreton_plus_mags_tree, clade_a1_tips)
+
+# ST data for taxa in Clade A1
+st_data <- source_data %>%
+  left_join(select(enterococcus_mag_data, Name, ST), by = c("tiplabel" = "Name"))
+
+# Join tree with data
+tree_data_st <- as_tibble(clade_a1_tree) %>%
+  left_join(st_data, by = c("label" = "tiplabel"))
+
+# Plot the tree with tip labels colored by ST to check 
+ggtree(clade_a1_tree, layout = "rectangular") %<+% tree_data_st +
+  geom_tippoint(aes(color = ST), size = 3) +
+  labs(color = "ST") +
+  theme(legend.position = "right") +
+  ggnewscale::new_scale("shape") +
+  geom_fruit(
+    geom = geom_point,
+    mapping = aes(y = label, shape = as.character(ever_infected)),
+    size = 3,
+    color = "black",
+    pwidth = 0.05,
+    axis.params = list(axis = "y", title = "Ever infected")
+  ) +
+  scale_shape_manual(
+    name = "Ever infected",
+    values = infected_shapes,
+    labels = c("No", "Yes")
+  )
+```
+
+Now, I plotted the distribution of infected and uninfected patients across STs:
+
+```{r}
+# Summarize: count unique PatientIDs per ST and ever_infected status
+st_patient_counts <- st_data %>%
+  filter(!is.na(PatientID), !is.na(ST)) %>%
+  group_by(ST, ever_infected, PatientID) %>%
+  summarise(.groups = "drop") %>%  # one row per ST, ever_infected, PatientID
+  group_by(ST, ever_infected) %>%
+  summarise(n_patients = n_distinct(PatientID), .groups = "drop")
+
+# Calculate total patients per ST for ordering
+st_totals <- st_patient_counts %>%
+  group_by(ST) %>%
+  summarise(total_patients = sum(n_patients), .groups = "drop")
+
+# Set ST as a factor ordered by total_patients
+st_patient_counts <- st_patient_counts %>%
+  left_join(st_totals, by = "ST") %>%
+  mutate(ST = factor(ST, levels = st_totals$ST[order(st_totals$total_patients, decreasing = TRUE)])) %>%
+  filter(ST != "-")
+
+# Plot colonization and infections by ST
+ggplot(st_patient_counts, aes(x = ST, y = n_patients, fill = ever_infected)) +
+  geom_bar(stat = "identity", position = "stack") +
+  scale_fill_manual(values = c("TRUE" = "#0D7E2B", "FALSE" = "gray75"),
+                    name = "Infection status",
+                    labels = c("Not infected", "Infected")) +
+  labs(x = "ST", y = "Number of patients") +
+  custom_theme +
+  theme(
+    axis.text.x = element_blank(),
+    axis.ticks.x = element_blank(),
+    legend.position = c(0.75, 0.8)
+  )
+
+# Save the plot
+ggsave("document/plots/st_bsi_distribution_isabl1.pdf", width = 3, height = 4)
+```
+
+### Strain sharing in patients colonized with ST412
+
+I selected ST412 because it is the most common strain in this segment of the dataset. Let's first get a list of the samples with ST412:
+
+```{r}
+# ST412 samples
+st412_samples <- st_data %>%
+  filter(ST == "412") %>%
+  mutate(sample = str_remove(tiplabel, paste0(PatientID, "_"))) %>%
+  mutate(sample = str_remove(sample, "_C_.*")) %>%
+  pull(sample)
+
+dir.create("analyses/enterococcus_diversity_II/strains/instrain/isabl1/st412/misc", recursive = TRUE, showWarnings = FALSE)
+
+# Write ST412 samples
+write(st412_samples, "analyses/enterococcus_diversity_II/strains/instrain/isabl1/st412/misc/st42_samples.txt")
+```
+
+With these samples, I can now infer the inStrain profiles for the ST412 genomes using the dereplicated library of MAGs and the reference *E. faecium* MAG I used for the previous iteration of enterococcus diversity analyses ADD LINK HERE:
+
+```{bash, eval=FALSE}
+# Submit the first inStrain profile job (for the first sample) and capture its job ID
+jid=$(sbatch --array=1-1 code/scripts/enterococcus_diversity_II/instrain_profile_isabl1_st412.sh | awk '{print $4}')
+
+# Submit the rest of the inStrain profile jobs (samples 1-172), dependent on the first finishing
+sbatch --dependency=afterok:$jid --array=2-172 code/scripts/enterococcus_diversity_II/instrain_profile_isabl1_st412.sh
+```
+
+And then, I compared the profiles:
+
+```{bash, eval=FALSE}
+sbatch code/scripts/enterococcus_diversity_II/instrain_compare_st42.sh
 ```

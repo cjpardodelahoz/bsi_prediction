@@ -447,8 +447,10 @@ sed -i "s|_cov.*||" analyses/enterococcus_diversity/strains/ref_contigs/ref_cont
 
 # Extract contig names from the dereplicated E. faecium MAG fasta and save to a list
 grep '^>' analyses/enterococcus_diversity/genomes/drep/dereplicated_genomes/s_1044K_1_meta_vamb_single.fna | \
-  sed 's/^>//' | \
-  cut -d '_' -f '1 2 3 4' > analyses/enterococcus_diversity/strains/ref_contigs/ref_contig_list.txt
+  sed 's/^>//' > analyses/enterococcus_diversity/strains/ref_contigs/ref_contig_list.txt
+#grep '^>' analyses/enterococcus_diversity/genomes/drep/dereplicated_genomes/s_1044K_1_meta_vamb_single.fna | \
+#  sed 's/^>//' | \
+#  cut -d '_' -f '1 2 3 4' > analyses/enterococcus_diversity/strains/ref_contigs/ref_contig_list.txt
 ```
 
 Run Prokka aanotation on the set of E. faecium reference contigs using the labeling from [*E. faecium* strain DO](https://www.ncbi.nlm.nih.gov/nuccore/CP003583):

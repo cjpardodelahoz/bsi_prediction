@@ -29,6 +29,7 @@ website:
         contents:
           - code/qmds/enterococcus_diversity.qmd
           - code/qmds/enterococcus_diversity_II.qmd
+          - code/qmds/domination_ecology.qmd
 format:
   html:
     theme:

@@ -7,9 +7,9 @@ format:
     code-summary: "Show the code"
 ---
 
-## Exploration
+## Role of antibiotics on BSI risk
 
-### Are there noticeable microbiome differences among dominated patients who did and did not become infected?
+Let's start by preparing the clinical and microbiome datasets:
 
 ```{r}
 # Load required libraries and functions
@@ -35,31 +35,41 @@ dominated_patients <- domination_bsi_summary %>%
     filter(ever_dominated == TRUE) %>%
     pull(PatientID)
 
-# Load patient-day table with clinical covariates and filter to dominated patients
+# Load patient-day table with clinical covariates and filter to days -9 to 30
 load("analyses/processed_data/tblpatientday_clinical.RData")
-tblpatientday_clinical_dominated <- tblpatientday_clinical %>%
-    filter(PatientID %in% dominated_patients) %>%
+tblpatientday_clinical <- tblpatientday_clinical %>%
     drop_na() %>%
-    filter(between(as.numeric(as.character(DayRelativeToNearestHCT)), -9, 30))
+    filter(between(as.numeric(as.character(DayRelativeToNearestHCT)), -9, 30)) %>%
+    arrange(PatientID, DayRelativeToNearestHCT) %>%
+    group_by(PatientID) %>%
+    mutate(Enterococcus_faecium_infection = if_else(
+      Enterococcus_faecium_infection == 1 & cumsum(Enterococcus_faecium_infection) == 1, 1, 0
+  )) %>%
+  ungroup()
 
 # Make a version of the patient day table that includes the microbiome data
+tblpatientday_microbiome <- tblpatientday_clinical %>%
+    mutate(DayRelativeToNearestHCT = as.numeric(as.character(DayRelativeToNearestHCT))) %>%
+    left_join(tblrel_genus_meta, by = c("PatientID", "DayRelativeToNearestHCT")) %>%
+    mutate(DayRelativeToNearestHCT = as.factor(DayRelativeToNearestHCT)) %>%
+    drop_na()
+
+# Make a version of the patient day table that includes the microbiome data after domination
 tblpatientday_clinicalmicro_dominated <- tblpatientday_clinical_dominated %>%
     mutate(DayRelativeToNearestHCT = as.numeric(as.character(DayRelativeToNearestHCT))) %>%
     left_join(tblrel_genus_meta, by = c("PatientID", "DayRelativeToNearestHCT")) %>%
     mutate(DayRelativeToNearestHCT = as.factor(DayRelativeToNearestHCT)) %>%
-    filter(Enterococcus_abund >= 0.1) %>%
-    #left_join(tblqpcr, by = c("Sample" = "SampleID")) %>%
-    drop_na() #%>%
-    #mutate(Enterococcus_abs = Enterococcus_abund * qPCR16S)
+    filter(Enterococcus_abund >= 0.1 & WBCtotal < 0.5 & Enterococcus_infection.y == F) %>%
+    drop_na()
 ```
 
-Let's check whether mucositis is still a good predictor of BSI when we only considered patients with dominations:
+Let's check the effect of the most important classes of antibiotics and clinical covariates on *E. faecium* infection across the full clinical dataset:
 
 ```{r}
-# Fit logistic regression model
+# Fit logistic regression model to full clinical dataset
 clinical_model <- glm(
-    Enterococcus_infection ~ WBCtotal + mucositis_grade + MaxTemperature + DayRelativeToNearestHCT,
-    data = tblpatientday_clinical_dominated,
+    Enterococcus_faecium_infection ~ WBCtotal + penicillins + carbapenems + cephalosporins + `glycopeptide antibiotics` + quinolones + DayRelativeToNearestHCT,
+    data = tblpatientday_clinical,
     family = binomial(link = "logit")
 )
 
@@ -67,10 +77,50 @@ clinical_model <- glm(
 summary(clinical_model)
 ```
 
+Let's make sure that the effect of the antibiotics remains qualitatively equivalent when the reference day is the day before infection to remove cases where the antibiotics are administered reactively:
+
+```{r}
+# Data table with infection shifted
+tblpatientday_clinical_shifted <- tblpatientday_clinical %>%
+  arrange(PatientID, DayRelativeToNearestHCT) %>%
+  group_by(PatientID) %>%
+  mutate(Enterococcus_infection_shifted = lag(Enterococcus_infection, n = 1, default = 0)) %>%
+  mutate(Enterococcus_infection_shifted = if_else(
+    Enterococcus_infection_shifted == 1 & cumsum(Enterococcus_infection_shifted) == 1, 1, 0
+  )) %>%
+  ungroup()
+
+# Fit logistic regression model to full clinical dataset
+clinical_model_shifted <- glm(
+    Enterococcus_infection_shifted ~ WBCtotal + penicillins + carbapenems + cephalosporins + `glycopeptide antibiotics` + quinolones + DayRelativeToNearestHCT,
+    data = tblpatientday_clinical_shifted,
+    family = binomial(link = "logit")
+)
+
+# Summary of the model
+summary(clinical_model_shifted)
+```
+
+Now, we fit a similar model but including the abundance of *E. faecium*
+
+```{r}
+# Fit logistic regression model to full clinical dataset
+microbiome_model <- glm(
+    Enterococcus_infection.x ~ WBCtotal + penicillins + carbapenems + cephalosporins + DayRelativeToNearestHCT,
+    data = tblpatientday_microbiome,
+    family = binomial(link = "logit")
+)
+
+# Summary of the model
+summary(microbiome_model)
+```
+
+And whether Enterococcus relative abundance is a predictor before and after domination
+
 ```{r}
 # Fit logistic regression model
 relabund_model <- glm(
-    Enterococcus_infection.x ~ Enterococcus_abund + WBCtotal + mucositis_grade + MaxTemperature + DayRelativeToNearestHCT,
+    Enterococcus_infection.x ~ log10(Enterococcus_abund + 0.0001) + WBCtotal + DayRelativeToNearestHCT,
     data = tblpatientday_clinicalmicro_dominated,
     family = binomial(link = "logit")
 )
@@ -78,6 +128,83 @@ relabund_model <- glm(
 # Summary of the model
 summary(relabund_model)
 ```
+
+Let's see
+
+```{r}
+# Patient-day table with micro data
+tblpatientday_clinicalmicro <- tblpatientday_clinical %>%
+  mutate(DayRelativeToNearestHCT = as.numeric(as.character(DayRelativeToNearestHCT))) %>%
+  left_join(tblrel_genus_meta, by = c("PatientID", "DayRelativeToNearestHCT")) %>%
+  left_join(domination_bsi_summary, by = "PatientID") %>%
+  filter(Enterococcus_abund > 0.1) %>%
+  drop_na()
+
+  # Compute per-patient maximum Enterococcus abundance for dominated patients and plot densities + histogram
+  patient_max_abund <- tblpatientday_clinicalmicro %>%
+    filter(ever_dominated == TRUE) %>%
+    group_by(PatientID, ever_infected) %>%
+    summarize(max_abund = max(Enterococcus_abund, na.rm = TRUE), .groups = "drop") %>%
+    drop_na(max_abund) %>%
+    mutate(ever_infected = factor(ever_infected, levels = c(FALSE, TRUE),
+                                  labels = c("Never infected", "Ever infected")))
+
+  library(ggplot2)
+
+  # Density plot: two densities (ever infected vs never infected) on same plot
+  p_density <- ggplot(patient_max_abund, aes(x = max_abund, color = ever_infected, fill = ever_infected)) +
+    geom_density(alpha = 0.35) +
+    labs(
+      x = "Maximum Enterococcus relative abundance (per patient)",
+      y = "Density",
+      color = "",
+      fill = "",
+      title = "Distribution of maximum Enterococcus abundance\namong ever-dominated patients, by infection status (density)"
+    ) +
+    theme_minimal()
+
+  print(p_density)
+
+  # Histogram plot: counts on y-axis (number of patients)
+  medians <- patient_max_abund %>%
+    group_by(ever_infected) %>%
+    summarize(med = median(max_abund, na.rm = TRUE), .groups = "drop")
+
+  p_hist <- ggplot(patient_max_abund, aes(x = max_abund, fill = ever_infected)) +
+    geom_histogram(position = "identity", alpha = 0.85) +
+    geom_vline(data = medians, aes(xintercept = med, color = ever_infected), linetype = "dashed", size = 1) +
+    scale_fill_manual(
+      values = c(
+        "Ever infected" = "#0D7E2B", "Never infected" = "gray75"
+      )
+    ) +
+    scale_color_manual(
+      values = c(
+        "Ever infected" = "#0D7E2B", "Never infected" = "gray75"
+      )
+    ) +
+    labs(
+      x = "Max. Enterococcus relative abundance (per patient)",
+      y = "Number of patients",
+      color = "",
+      fill = "Infection status"
+    ) +
+    custom_theme +
+    theme(
+      legend.position = c(0.65, 0.85), # adjust as needed
+      legend.background = element_rect(fill = "white", color = NA)
+    )
+
+  print(p_hist)
+
+# Save the density and histogram plots as PDF
+ggsave(filename = "document/plots/max_enterococcus_density.pdf",
+  plot = p_hist,
+  width = 4, height = 4)
+```
+
+
+
 
 ```{r}
 # 1. Select only columns ending with '_abund' (excluding Enterococcus_abund)

@@ -1,0 +1,28 @@
+---
+title: "Using PULs to predict Proteobacteria BSI risk"
+engine: knitr
+format:
+  html:
+    code-fold: true
+    code-summary: "Show the code"
+---
+
+
+## Defining case and control sets from metagenomic samples
+
+
+
+## Predicting PULs at metagenome scale
+
+I started with the metagenomic assemblies that I generated for the Enterococcus F32 exploration. They are under `analyses/enterococcus_diversity/metagenomes/assembly/metaspades/`, but I will symlink them to a new directory to simplify paths:
+
+```{sh, eval=FALSE}
+mkdir -p analyses/bacteroides_pul/metagenomes/assembly
+ln -s /data1/xavierj/carlos/bsi_prediction/analyses/enterococcus_diversity/metagenomes/assembly/metaspades /data1/xavierj/carlos/bsi_prediction/analyses/bacteroides_pul/metagenomes/assembly/metaspades
+```
+
+Then, I did the Prokka gene predictions for all the metagenomes:
+
+```{sh}
+sbatch code/scripts/bacteroides_pul/prokka_isabl1.sh
+```

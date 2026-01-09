@@ -1,6 +1,6 @@
 #!/bin/bash
-#SBATCH --output=logs/bacteroides_pul/prokka_%A_%a.out
-#SBATCH --error=logs/bacteroides_pul/prokka_%A_%a.err
+#SBATCH --output=log/bacteroides_pul/prokka_%A_%a.out
+#SBATCH --error=log/bacteroides_pul/prokka_%A_%a.err
 #SBATCH --array=1-2 #1-2077
 #SBATCH --cpus-per-task=32
 #SBATCH --mem=64G

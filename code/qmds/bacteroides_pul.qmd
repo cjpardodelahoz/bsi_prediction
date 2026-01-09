@@ -10,7 +10,180 @@ format:
 
 ## Defining case and control sets from metagenomic samples
 
+Get a clean list of metagenomic samples (isabl1):
+```{sh}
+cat misc_files/enterococcus_diversity/all_target_samples_hostdepleted.txt | sed "s/\[\('\([^']*\)'\)\]/\2/" | sed '$d' > misc_files/bacteroides_pul/isabl1_samples.txt
+```
 
+Now, let's figure which patients have metagenomic samples within a certain period (7, 14, and 30 days) before a proteobacteria BSI:
+
+```{r}
+# Load required libraries and functions
+suppressMessages(library(tidyverse))
+source("code/rfunctions/data_helpers.r")
+
+# Load the list of samples with metagenomic sequence
+isabl1_samples <- scan("misc_files/bacteroides_pul/isabl1_samples.txt", what = "character")
+
+# Load the table with sample-patient data
+tblASVsamples <- read_csv("data/tblASVsamples.csv") %>%
+  distinct(SampleID, .keep_all = TRUE) %>%
+  mutate(isabl1 = SampleID %in% isabl1_samples) %>%
+  select(SampleID, PatientID, DayRelativeToNearestHCT, isabl1)
+
+# Load the patientday table
+load("analyses/processed_data/tblpatientday_clinical.RData")
+tblpatientday_clinical$DayRelativeToNearestHCT <- as.numeric(as.character(tblpatientday_clinical$DayRelativeToNearestHCT))
+
+# Annorate patientday table with isabl1 isabl1
+tblpatientday_isabl1 <- tblpatientday_clinical %>%
+  left_join(tblASVsamples, by = c("PatientID" = "PatientID", "DayRelativeToNearestHCT" = "DayRelativeToNearestHCT"))
+
+# Patients with at least one metagenome and a Proteobacteria infection
+proteobsi_isabl1_all <- tblpatientday_isabl1 %>%
+  group_by(PatientID) %>%
+  summarize(
+    has_isabl1 = any(isabl1 == TRUE, na.rm = TRUE),
+    has_proteo = any(Proteobacteria_infection == 1, na.rm = TRUE)
+  ) %>%
+  filter(has_isabl1 & has_proteo) %>%
+  pull(PatientID) %>%
+  sort() %>%
+  unique()
+
+# Let's now find the patients with metagenomes within X days of the first Proteo infection
+
+# Find first day of Proteobacteria_infection for each patient
+first_proteo <- tblpatientday_isabl1 %>%
+  filter(Proteobacteria_infection == 1) %>%
+  group_by(PatientID) %>%
+  summarize(first_infection_day = min(DayRelativeToNearestHCT, na.rm = TRUE))
+
+# Patients with a metagenome within 7 days before or on the first infection day
+proteobsi_isabl1_7day <- tblpatientday_isabl1 %>%
+  inner_join(first_proteo, by = "PatientID") %>%
+  filter(isabl1 == TRUE,
+         DayRelativeToNearestHCT >= (first_infection_day - 7),
+         DayRelativeToNearestHCT <= first_infection_day) %>%
+  pull(PatientID) %>%
+  unique() %>%
+  sort()
+
+# Patients with a metagenome within 14 days before or on the first infection day
+proteobsi_isabl1_14day <- tblpatientday_isabl1 %>%
+  inner_join(first_proteo, by = "PatientID") %>%
+  filter(isabl1 == TRUE,
+         DayRelativeToNearestHCT >= (first_infection_day - 14),
+         DayRelativeToNearestHCT <= first_infection_day) %>%
+  pull(PatientID) %>%
+  unique() %>%
+  sort()
+
+# Patients with a metagenome within 14 days before or on the first infection day
+proteobsi_isabl1_20day <- tblpatientday_isabl1 %>%
+  inner_join(first_proteo, by = "PatientID") %>%
+  filter(isabl1 == TRUE,
+         DayRelativeToNearestHCT >= (first_infection_day - 20),
+         DayRelativeToNearestHCT <= first_infection_day) %>%
+  pull(PatientID) %>%
+  unique() %>%
+  sort()
+
+# Show patient lists
+proteobsi_isabl1_7day
+proteobsi_isabl1_14day
+proteobsi_isabl1_20day
+```
+
+Now, for each set, let's make a matching control set for the statistical analyses:
+
+```{r}
+tblrel_genus_meta <- prep_taxa_counts("genus")
+
+
+#' Create matched case-control dataset for metagenomic samples (Proteobacteria BSI)
+#'
+#' @param case_patients Vector of PatientIDs for cases
+#' @param n_controls Number of controls per case (default 4)
+#' @return Data frame with matched case-control samples
+create_case_control_data <- function(case_patients, n_controls = 4) {
+  # Use objects from the environment: tblASVsamples, tblpatientday_clinical, first_proteo, tblrel_genus_meta, proteobsi_isabl1_all
+  
+  # Get case samples: nearest metagenome sample before/on first infection
+  case_samples <- tblASVsamples %>%
+    filter(PatientID %in% case_patients, isabl1 == TRUE) %>%
+    inner_join(first_proteo, by = "PatientID") %>%
+    mutate(day_diff = first_infection_day - DayRelativeToNearestHCT) %>%
+    filter(day_diff >= 0) %>%
+    group_by(PatientID) %>%
+    slice_min(order_by = day_diff, n = 1, with_ties = FALSE) %>%
+    ungroup() %>%
+    select(PatientID, SampleID, DayRelativeToNearestHCT, first_infection_day, day_diff)
+  
+  # Add clinical phase and sex
+  case_samples <- case_samples %>%
+    left_join(tblpatientday_clinical %>% select(PatientID, DayRelativeToNearestHCT, clinical_phase, sex),
+              by = c("PatientID", "DayRelativeToNearestHCT"))
+  
+  # Prepare control pool: patients with metagenomic samples, no Proteobacteria infection
+  control_pool <- tblASVsamples %>%
+    filter(isabl1 == TRUE, !PatientID %in% proteobsi_isabl1_all) %>%
+    left_join(tblpatientday_clinical %>% select(PatientID, DayRelativeToNearestHCT, clinical_phase, sex, Proteobacteria_infection),
+              by = c("PatientID", "DayRelativeToNearestHCT")) %>%
+    filter(Proteobacteria_infection == 0 | is.na(Proteobacteria_infection))
+  
+  # For each case, randomly select n_controls matched by clinical_phase and sex
+  set.seed(1830)
+  matched_case_controls <- case_samples %>%
+    rowwise() %>%
+    mutate(
+      control_samples = list({
+        phase <- clinical_phase
+        sex_ref <- sex
+        control_pool %>%
+          filter(clinical_phase == phase, sex == sex_ref) %>%
+          sample_n(size = min(n_controls, n()), replace = FALSE) %>%
+          select(PatientID, SampleID, DayRelativeToNearestHCT, clinical_phase, sex)
+      })
+    ) %>%
+    unnest(control_samples, names_sep = "_control") %>%
+    ungroup()
+  
+  # Combine into a single dataset
+  case_control_data <- bind_rows(
+    case_samples %>%
+      mutate(case = TRUE) %>%
+      select(PatientID, SampleID, DayRelativeToNearestHCT, clinical_phase, sex, case),
+    matched_case_controls %>%
+      mutate(case = FALSE) %>%
+      select(PatientID = control_samples_controlPatientID,
+             SampleID = control_samples_controlSampleID,
+             DayRelativeToNearestHCT = control_samples_controlDayRelativeToNearestHCT,
+             clinical_phase = control_samples_controlclinical_phase,
+             sex = control_samples_controlsex,
+             case)
+  )
+  
+  return(case_control_data)
+}
+
+casecontrol_7day <- create_case_control_data(n_controls = 4, proteobsi_isabl1_7day)
+casecontrol_14day <- create_case_control_data(n_controls = 4, proteobsi_isabl1_14day)
+casecontrol_20day <- create_case_control_data(n_controls = 4, proteobsi_isabl1_20day)
+```
+
+Let's print the Patient IDs from the matched case-control datasets to send to Isaac for benchmarking
+
+```{r}
+casecontrol_7day_patients <- casecontrol_7day$PatientID %>% unique()
+casecontrol_14day_patients <- casecontrol_14day$PatientID %>% unique()
+casecontrol_20day_patients <- casecontrol_20day$PatientID %>% unique()
+writeLines(casecontrol_7day_patients, "misc_files/bacteroides_pul/casecontrol_7day_patients.txt")
+writeLines(casecontrol_14day_patients, "misc_files/bacteroides_pul/casecontrol_14day_patients.txt")
+writeLines(casecontrol_20day_patients, "misc_files/bacteroides_pul/casecontrol_20day_patients.txt")
+```
+
+``
 
 ## Predicting PULs at metagenome scale
 
@@ -25,4 +198,75 @@ Then, I did the Prokka gene predictions for all the metagenomes:
 
 ```{sh}
 sbatch code/scripts/bacteroides_pul/prokka_isabl1.sh
+```
+
+And then used them for the PUL predictions with DBCAN:
+
+```{sh}
+sbatch code/scripts/bacteroides_pul/dbcan_isabl1.sh
+```
+
+
+
+```{r}
+#TRASH
+
+
+case_patients <- proteobsi_isabl1_7day # or _7day, _20day
+
+case_samples <- tblASVsamples %>%
+  filter(PatientID %in% case_patients, isabl1 == TRUE) %>%
+  inner_join(first_proteo, by = "PatientID") %>%
+  mutate(day_diff = first_infection_day - DayRelativeToNearestHCT) %>%
+  filter(day_diff >= 0) %>%
+  group_by(PatientID) %>%
+  slice_min(order_by = day_diff, n = 1, with_ties = FALSE) %>%
+  ungroup() %>%
+  select(PatientID, SampleID, DayRelativeToNearestHCT, first_infection_day, day_diff)
+
+# Add clinical phase and sex
+case_samples <- case_samples %>%
+  left_join(tblpatientday_clinical %>% select(PatientID, DayRelativeToNearestHCT, clinical_phase, sex),
+            by = c("PatientID", "DayRelativeToNearestHCT"))
+
+# Prepare control pool: patients with metagenomic samples, no Proteobacteria infection
+control_pool <- tblASVsamples %>%
+  filter(isabl1 == TRUE, !PatientID %in% proteobsi_isabl1_all) %>%
+  left_join(tblpatientday_clinical %>% select(PatientID, DayRelativeToNearestHCT, clinical_phase, sex, Proteobacteria_infection),
+            by = c("PatientID", "DayRelativeToNearestHCT")) %>%
+  filter(Proteobacteria_infection == 0 | is.na(Proteobacteria_infection))
+
+# For each case, randomly select 4 matched controls by clinical_phase and sex
+set.seed(1830)
+matched_case_controls <- case_samples %>%
+  rowwise() %>%
+  mutate(
+    control_samples = list({
+      phase <- clinical_phase
+      sex_ref <- sex
+      control_pool %>%
+        filter(clinical_phase == phase, sex == sex_ref) %>%
+        sample_n(size = min(4, n()), replace = FALSE) %>%
+        select(PatientID, SampleID, DayRelativeToNearestHCT, clinical_phase, sex)
+    })
+  ) %>%
+  unnest(control_samples, names_sep = "_control") %>%
+  ungroup()
+
+# Combine into a single dataset
+case_control_data <- bind_rows(
+  case_samples %>%
+    mutate(case = TRUE) %>%
+    select(PatientID, SampleID, DayRelativeToNearestHCT, clinical_phase, sex, case),
+  matched_case_controls %>%
+    mutate(case = FALSE) %>%
+    select(PatientID = control_samples_controlPatientID,
+           SampleID = control_samples_controlSampleID,
+           DayRelativeToNearestHCT = control_samples_controlDayRelativeToNearestHCT,
+           clinical_phase = control_samples_controlclinical_phase,
+           sex = control_samples_controlsex,
+           case)
+) #%>%
+  #left_join(tblrel_genus_meta, by = c("PatientID", "SampleID"))
+
 ```

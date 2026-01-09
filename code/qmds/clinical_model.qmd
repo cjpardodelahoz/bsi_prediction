@@ -80,6 +80,13 @@ enterococcus <- c("Enterococcus_Faecium_Vancomycin_Resistant",
 klebsiella <- c("Klebsiella_Pneumoniae",
                 "Klebsiella")
 staph <- c("Coagulase_Negative_Staphylococcus", "Staphylococcus")
+proteobacteria <- c("Escherichia",
+                "Klebsiella_Pneumoniae",
+                "Enterobacter",
+                "Citrobacter",
+                "Klebsiella",
+                "Pseudomonas",
+                "Stenotrophomonas_Maltophilia")
 
 # Load and prepare clinical data
 tbltemperature <- suppressMessages(read_csv("data/tbltemperature.csv")) %>%
@@ -170,6 +177,7 @@ tblpatientday_clinical <- tblpatientday %>%
         Enterococcus_infection = if_any(all_of(enterococcus), ~ .x == 1),
         Klebsiella_infection = if_any(all_of(klebsiella), ~ .x == 1),
         Staphylococcus_culture = if_any(all_of(staph), ~ .x == 1),
+        Proteobacteria_infection = if_any(all_of(proteobacteria), ~ .x == 1),
         Escherichia_infection = Escherichia,
         Candida_infection = Candida
     ) %>%

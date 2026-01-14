@@ -185,7 +185,7 @@ writeLines(casecontrol_20day_patients, "misc_files/bacteroides_pul/casecontrol_2
 
 ``
 
-## Predicting PULs at metagenome scale
+## Quantifying PUL abundance at metagenome scale
 
 I started with the metagenomic assemblies that I generated for the Enterococcus F32 exploration. They are under `analyses/enterococcus_diversity/metagenomes/assembly/metaspades/`, but I will symlink them to a new directory to simplify paths:
 
@@ -194,19 +194,26 @@ mkdir -p analyses/bacteroides_pul/metagenomes/assembly
 ln -s /data1/xavierj/carlos/bsi_prediction/analyses/enterococcus_diversity/metagenomes/assembly/metaspades /data1/xavierj/carlos/bsi_prediction/analyses/bacteroides_pul/metagenomes/assembly/metaspades
 ```
 
-Then, I did the Prokka gene predictions for all the metagenomes:
+Then I obtained CGCs and PUL predictions with DBCAN:
 
-```{sh}
-sbatch code/scripts/bacteroides_pul/prokka_isabl1.sh
-```
-
-And then used them for the PUL predictions with DBCAN:
-
-```{sh}
+```{sh, eval=FALSE}
 sbatch code/scripts/bacteroides_pul/dbcan_isabl1.sh
 ```
 
+Having the predictions, I ran the pipeline to obtain TPM counts of the CGCs and PULs:
 
+```{sh, eval=FALSE}
+sbatch code/scripts/bacteroides_pul/get_pulabund.sh
+```
+
+## Carbohydrate degradation potential in gut-microbiome taxa across the tree of life
+
+```{r}
+library(treeio)
+library(ggtree)
+
+bac120_tree <- read.tree("bac120.tree")
+```
 
 ```{r}
 #TRASH

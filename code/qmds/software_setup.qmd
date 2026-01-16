@@ -94,3 +94,14 @@ if (!requireNamespace("BiocManager", quietly = TRUE))
 
 BiocManager::install(c("ggtree", "treeio", "ggtreeExtra"))
 ```
+
+For signalP6, I first had to obtain a download link from https://services.healthtech.dtu.dk/services/SignalP-6.0/, then create a conda environment with python 3.10 and use pip to install the signalP packages, then move the model files to the module directory:
+
+```{bash, eval=FALSE}
+wget https://services.healthtech.dtu.dk/download/c4abf120-bd7e-46a9-b1bc-1f95a479d0f1/signalp-6.0i.fast.tar.gz
+tar -xzf signalp-6.0i.fast.tar.gz
+cd signalp6_fast
+pip install signalp-6-package/
+IGNALP_DIR=$(python3 -c "import signalp; import os; print(os.path.dirname(signalp.__file__))" )
+cp -r signalp-6-package/models/* $SIGNALP_DIR/model_weights/
+```

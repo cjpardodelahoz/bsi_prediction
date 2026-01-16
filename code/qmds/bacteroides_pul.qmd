@@ -208,6 +208,61 @@ sbatch code/scripts/bacteroides_pul/get_pulabund.sh
 
 ## Carbohydrate degradation potential in gut-microbiome taxa across the tree of life
 
+### PUL predictions across isabl1 MAGs
+
+We'll work with thebins recovered from the isabl1 metagenomes using multi-sample sample binning with VAMB (successfull metaspades assemblies used in enterococcus_diversity_II). Let's symlink the MAG directory:
+
+```{sh}
+ln -s /data1/xavierj/carlos/bsi_prediction/analyses/enterococcus_diversity_II/binning/short/isabl1/vamb/multi_bins /data1/xavierj/carlos/bsi_prediction/analyses/bacteroides_pul/mags
+```
+
+Now, we run CheckM2 on all the bins:
+
+```{sh}
+sbatch code/scripts/bacteroides_pul/checkm2_isabl1.sh
+```
+
+With the CheckM results and the GTDB results I obtained for the Enterococcus projects for these bins, we can now select a subset of MAGs on which to do the PUL predictions:
+
+```{r}
+# Load the CheckM2 and GTDB reports
+gtdb <- read_delim("analyses/enterococcus_diversity_II/binning/short/isabl1/gtdb/gtdbtk.bac120.summary.tsv")
+checkm <- read_delim("analyses/bacteroides_pul/checkm2/quality_report.tsv")
+
+# Join the reports, starting with the GTDB which includes only the MAGs from Bacteria and split the classification string
+full_report <- left_join(gtdb, checkm, by = c("user_genome" = "Name")) %>%
+  separate(classification,
+           into = c("domain", "phylum", "class", "order", "family", "genus", "species"),
+           sep = ";",
+           fill = "right",
+           remove = FALSE) %>%
+  mutate(across(c(domain, phylum, class, order, family, genus, species),
+                ~ sub("^[a-z]__","", .)))
+
+# Get list of MAGs with >90% completion and <10% contamination
+nc_mags <- full_report %>%
+  filter(Contamination <= 10 & Completeness >= 90 & Contig_N50 >= 50000) %>%
+  pull(user_genome) %>%
+  unique
+
+write(nc_mags, "analyses/bacteroides_pul/isabl1_nc_mags.txt")
+```
+
+By filtering MAGs with >90% completeness and <10% contamination, we en up with 10360 MAGs from 980 species out of 1578 (~62%) of all species detected. All 10 major phyla and ~70-80% of all other taxonomic ranks are represented in this set.
+
+Now, let's predict CGCs and PULs for those selected MAGs:
+
+```{bash, eval=FALSE}
+sbatch code/scripts/bacteroides_pul/isabl1_mags_dbcan_1-9999.sh # 6000821
+sbatch code/scripts/bacteroides_pul/isabl1_mags_dbcan_10000-10360.sh # 6001620
+```
+
+And then predict the signal peptides of the CGC proteins:
+
+```{bash, eval=FALSE}
+sbatch code/scripts/bacteroides_pul/isabl1_mags_signalp_1-9999.sh
+```
+
 ```{r}
 library(treeio)
 library(ggtree)

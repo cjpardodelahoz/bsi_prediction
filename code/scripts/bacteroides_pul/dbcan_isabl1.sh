@@ -1,9 +1,9 @@
 #!/bin/bash
 #SBATCH --output=log/bacteroides_pul/dbcan_%A_%a.out
 #SBATCH --error=log/bacteroides_pul/dbcan_%A_%a.err
-#SBATCH --array=46-47 #1-2076
-#SBATCH --cpus-per-task=16
-#SBATCH --mem=64G
+#SBATCH --array=1-2053
+#SBATCH --cpus-per-task=8
+#SBATCH --mem=32G
 #SBATCH -p cpu
 #SBATCH --time=24:00:00
 
@@ -12,7 +12,7 @@ source $(conda info --base)/etc/profile.d/conda.sh
 conda activate dbcan
 
 # Get sample name for current task
-SAMPLE_FILE="misc_files/bacteroides_pul/isabl1_samples.txt"
+SAMPLE_FILE="misc_files/bacteroides_pul/isabl1_succesful_assemblies.txt"
 SAMPLE=$(sed -n "${SLURM_ARRAY_TASK_ID}p" "$SAMPLE_FILE")
 
 # Directory containing metagenome assemblies
@@ -34,10 +34,10 @@ DB_DIR="/data1/xavierj/carlos/dbs/dbcan"
 
 # Run dbCAN using easy_substrate workflow
 run_dbcan easy_substrate \
-  --mode prok \
+  --mode meta \
   --input_raw_data "$CONTIGS" \
   --input_gff "${SAMPLE_OUTDIR}/uniInput.gff" \
   --gff_type prodigal \
   --output_dir "$SAMPLE_OUTDIR" \
   --db_dir "$DB_DIR" \
-  --threads 16
+  --threads 8

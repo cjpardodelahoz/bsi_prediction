@@ -189,15 +189,68 @@ writeLines(casecontrol_20day_patients, "misc_files/bacteroides_pul/casecontrol_2
 
 I started with the metagenomic assemblies that I generated for the Enterococcus F32 exploration. They are under `analyses/enterococcus_diversity/metagenomes/assembly/metaspades/`, but I will symlink them to a new directory to simplify paths:
 
-```{sh, eval=FALSE}
+```{bash, eval=FALSE}
 mkdir -p analyses/bacteroides_pul/metagenomes/assembly
 ln -s /data1/xavierj/carlos/bsi_prediction/analyses/enterococcus_diversity/metagenomes/assembly/metaspades /data1/xavierj/carlos/bsi_prediction/analyses/bacteroides_pul/metagenomes/assembly/metaspades
+```
+
+Some of the reads failed to assembly due to memory requirements, so I took the assemblies available from Isabl for those samples:
+
+```{bash, eval=FALSE}
+# Print list of samples missing assemblies
+while read sample; do
+  if [ ! -f "analyses/bacteroides_pul/metagenomes/assembly/metaspades/${sample}/contigs.fasta" ]; then
+    echo "$sample"
+  fi
+done < misc_files/bacteroides_pul/isabl1_samples.txt > misc_files/bacteroides_pul/missing_assemblies.txt
+
+# Activate isabl conda
+conda activate /usersoftware/collab004/conda/isablprod
+
+# Set env variables
+export ISABL_CLIENT_ID=1
+export ISABL_API_URL="https://isabl.microbiome.mskcc.org/api/v1"
+
+# Load sample names to variable
+TARGET_SAMPLES=$(paste -sd, misc_files/bacteroides_pul/missing_assemblies.txt)
+
+# Get the assembly paths available from isabl
+isabl get-metadata analyses \
+    -fi application.pk 84 \
+    -fi targets.sample.identifier.in ${TARGET_SAMPLES} \
+    --field targets.sample.identifier \
+    --field results.assembly_fa | grep "fasta" >  misc_files/bacteroides_pul/missing_assembly_paths.txt
+
+while IFS=$'\t' read -r sample path; do
+  # Remove brackets and single quotes from sample name
+  sample_clean=$(echo "$sample" | sed "s/\[\('\([^']*\)'\)\]/\2/")
+  # Fix origin path if needed
+  path_fixed=$(echo "$path" | sed 's|/data/brinkvd/|/data1/collab004/|')
+  # Make destination directory if it doesn't exist
+  dest_dir="analyses/bacteroides_pul/metagenomes/assembly/metaspades/${sample_clean}"
+  mkdir -p "$dest_dir"
+  # Copy fasta file
+  cp "$path_fixed" "${dest_dir}/contigs.fasta"
+done < misc_files/bacteroides_pul/missing_assembly_paths.txt
+
+# Print list of samples with succesful assemblies
+while read sample; do
+  if [ -f "analyses/bacteroides_pul/metagenomes/assembly/metaspades/${sample}/contigs.fasta" ]; then
+    echo "$sample"
+  fi
+done < misc_files/bacteroides_pul/isabl1_samples.txt > misc_files/bacteroides_pul/isabl1_succesful_assemblies.txt
+```
+
+Let's rerun the contig filtering to ensure that all assemblies contain only contigs >= 1000 bps:
+
+```{bash, eval=FALSE}
+sbatch code/scripts/bacteroides_pul/filter_contigs_isabl1.sh
 ```
 
 Then I obtained CGCs and PUL predictions with DBCAN:
 
 ```{sh, eval=FALSE}
-sbatch code/scripts/bacteroides_pul/dbcan_isabl1.sh
+sbatch code/scripts/bacteroides_pul/dbcan_isabl1.sh #6223852
 ```
 
 Having the predictions, I ran the pipeline to obtain TPM counts of the CGCs and PULs:

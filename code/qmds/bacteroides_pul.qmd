@@ -183,8 +183,6 @@ writeLines(casecontrol_14day_patients, "misc_files/bacteroides_pul/casecontrol_1
 writeLines(casecontrol_20day_patients, "misc_files/bacteroides_pul/casecontrol_20day_patients.txt")
 ```
 
-``
-
 ## Quantifying PUL abundance at metagenome scale
 
 I started with the metagenomic assemblies that I generated for the Enterococcus F32 exploration. They are under `analyses/enterococcus_diversity/metagenomes/assembly/metaspades/`, but I will symlink them to a new directory to simplify paths:
@@ -261,6 +259,25 @@ Having the predictions, I ran the pipeline to obtain TPM counts of the CGCs and 
 sbatch code/scripts/bacteroides_pul/get_pulabund.sh
 ```
 
+Finally, we compile the quantification results into feature tables at different levels for the samples for which the run was successful:
+
+```{bash, eval=FALSE}
+# Exclude the samples for which the PUL predition did not work
+awk 'NR!=2035 && NR!=1880 && NR!=1655 && NR!=1640 && NR!=1530 && NR!=1063 && NR!=63 && NR!=40' \
+  misc_files/bacteroides_pul/isabl1_succesful_assemblies.txt > misc_files/bacteroides_pul/isabl1_succesful_pulpredictions.txt
+
+# Make directory for modeling
+mkdir -p analyses/bacteroides_pul/pul_modeling/feature_tables
+
+# Get feature tables
+for out_type in fam_substrate fam subfam PUL EC; do
+  python software/custom/get_pulfeatures.py \
+    --samples misc_files/bacteroides_pul/isabl1_succesful_pulpredictions.txt \
+    --output analyses/bacteroides_pul/pul_modeling/feature_tables/${out_type}.tsv \
+    --base_dir analyses/bacteroides_pul/pul_prediction/abund/ \
+    --output_type ${out_type}
+done
+```
 ## Carbohydrate degradation potential in gut-microbiome taxa across the tree of life
 
 ### PUL predictions across isabl1 MAGs
@@ -315,7 +332,8 @@ sbatch code/scripts/bacteroides_pul/isabl1_mags_dbcan_10000-10360.sh # 6001620
 And then predict the signal peptides of the CGC proteins:
 
 ```{bash, eval=FALSE}
-sbatch code/scripts/bacteroides_pul/isabl1_mags_signalp_1-9999.sh
+sbatch code/scripts/bacteroides_pul/isabl1_mags_signalp_1-9999.sh # 6471842
+sbatch code/scripts/bacteroides_pul/isabl1_mags_signalp_10000-10360.sh
 ```
 
 ```{r}

@@ -1,7 +1,7 @@
 #!/bin/bash
 #SBATCH --output=log/bacteroides_pul/get_pulabund_%A_%a.out
 #SBATCH --error=log/bacteroides_pul/get_pulabund_%A_%a.err
-#SBATCH --array=1-2053
+#SBATCH --array=1-2053%40
 #SBATCH --cpus-per-task=8
 #SBATCH --mem=32G
 #SBATCH -p cpu
@@ -56,7 +56,10 @@ dbcan_utils cal_coverage \
     -o "$SAMPLE_ABUND_DIR/${SAMPLE}.depth.txt" \
     -t 8
 
-# 5. Estimate abundance of CAZymes, CGCs, and PULs using dbcan_utils
+# 5. Remove SAM and BAM files to save space
+rm "$SAM_DIR/${SAMPLE}.sam" "$SAM_DIR/${SAMPLE}.bam" "$SAM_DIR/${SAMPLE}.bam.bai"
+
+# 6. Estimate abundance of CAZymes, CGCs, and PULs using dbcan_utils
 cd "$SAMPLE_ABUND_DIR"
 dbcan_utils fam_abund \
     -bt "${SAMPLE}.depth.txt" \

@@ -253,6 +253,8 @@ Then I obtained CGCs and PUL predictions with DBCAN:
 sbatch code/scripts/bacteroides_pul/dbcan_isabl1.sh #6223852
 ```
 
+These failed because there were no CGCs found: 2035, 1880, 1655, 1640, 1530, 1063, 63, 40.
+
 Having the predictions, I ran the pipeline to obtain TPM counts of the CGCs and PULs:
 
 ```{sh, eval=FALSE}

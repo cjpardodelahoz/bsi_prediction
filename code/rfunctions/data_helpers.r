@@ -176,3 +176,68 @@ plot_patient_drug_timeline <- function(patient_id, tbldrug, tblhctmeta, tblrel_a
   return(plot)
 }
 
+#' Create matched case-control dataset for metagenomic samples (Proteobacteria BSI)
+#'
+#' @param case_patients Vector of PatientIDs for cases
+#' @param n_controls Number of controls per case (default 4)
+#' @return Data frame with matched case-control samples
+create_case_control_data <- function(case_patients, n_controls = 4, seed = 1830) {
+  # Use objects from the environment: tblASVsamples, tblpatientday_clinical, first_proteo, tblrel_genus_meta, proteobsi_isabl1_all
+  
+  # Get case samples: nearest metagenome sample before/on first infection
+  case_samples <- tblASVsamples %>%
+    filter(PatientID %in% case_patients, isabl1 == TRUE) %>%
+    inner_join(first_proteo, by = "PatientID") %>%
+    mutate(day_diff = first_infection_day - DayRelativeToNearestHCT) %>%
+    filter(day_diff >= 0) %>%
+    group_by(PatientID) %>%
+    slice_min(order_by = day_diff, n = 1, with_ties = FALSE) %>%
+    ungroup() %>%
+    select(PatientID, SampleID, DayRelativeToNearestHCT, first_infection_day, day_diff)
+  
+  # Add clinical phase and sex
+  case_samples <- case_samples %>%
+    left_join(tblpatientday_clinical %>% select(PatientID, DayRelativeToNearestHCT, clinical_phase, sex),
+              by = c("PatientID", "DayRelativeToNearestHCT"))
+  
+  # Prepare control pool: patients with metagenomic samples, no Proteobacteria infection
+  control_pool <- tblASVsamples %>%
+    filter(isabl1 == TRUE, !PatientID %in% proteobsi_isabl1_all) %>%
+    left_join(tblpatientday_clinical %>% select(PatientID, DayRelativeToNearestHCT, clinical_phase, sex, Proteobacteria_infection),
+              by = c("PatientID", "DayRelativeToNearestHCT")) %>%
+    filter(Proteobacteria_infection == 0 | is.na(Proteobacteria_infection))
+  
+  # For each case, randomly select n_controls matched by clinical_phase and sex
+  set.seed(seed)
+  matched_case_controls <- case_samples %>%
+    rowwise() %>%
+    mutate(
+      control_samples = list({
+        phase <- clinical_phase
+        sex_ref <- sex
+        control_pool %>%
+          filter(clinical_phase == phase, sex == sex_ref) %>%
+          sample_n(size = min(n_controls, n()), replace = FALSE) %>%
+          select(PatientID, SampleID, DayRelativeToNearestHCT, clinical_phase, sex)
+      })
+    ) %>%
+    unnest(control_samples, names_sep = "_control") %>%
+    ungroup()
+  
+  # Combine into a single dataset
+  case_control_data <- bind_rows(
+    case_samples %>%
+      mutate(case = TRUE) %>%
+      select(PatientID, SampleID, DayRelativeToNearestHCT, clinical_phase, sex, case),
+    matched_case_controls %>%
+      mutate(case = FALSE) %>%
+      select(PatientID = control_samples_controlPatientID,
+             SampleID = control_samples_controlSampleID,
+             DayRelativeToNearestHCT = control_samples_controlDayRelativeToNearestHCT,
+             clinical_phase = control_samples_controlclinical_phase,
+             sex = control_samples_controlsex,
+             case)
+  )
+  
+  return(case_control_data)
+}

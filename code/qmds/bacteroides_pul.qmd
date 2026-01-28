@@ -436,13 +436,13 @@ lasso_ec_7day <- run_lasso(casecontrol_ec_7day, log_transform = F)
 
 
 ```{r}
-glm_fructan <- glm(case ~ log10(Bacteroides_s_lat + 0.000001), 
-                   data = casecontrol_subfam_7day, 
+glm_fructan <- glm(case ~ cellulose, 
+                   data = casecontrol_fam_substrate_7day, 
                    family = binomial)
 
 summary(glm_fructan)
 
-ggplot(casecontrol_subfam_7day, aes(x = factor(case), y = GH32_e57)) +
+ggplot(casecontrol_fam_substrate_20day, aes(x = factor(case), y = log10(Bacteroides_s_lat+0.000001))) +
   geom_boxplot(outlier.shape = NA) +
   geom_jitter(width = 0.2, alpha = 0.7, color = "blue") +
   labs(
@@ -571,7 +571,7 @@ while IFS= read -r MAG; do
 done < ${NC_MAGS}
 ```
 
-Now, we can integrate the singalP data with the CGC CAZyme predictions
+Now, we can integrate the CGC CAZyme predictions, the singalP predictions, the MAG taxonomy, and assembly QC report: 
 
 ```{r}
 # For loading large tables
@@ -585,6 +585,9 @@ compiled_signalp <- fread("analyses/bacteroides_pul/mag_pul_summary/compiled_sig
 
 # Integrate cazyme and signalP data
 cazyme_data <- compiled_cgc %>%
+  group_by(mag, `CGC#`) %>%
+  filter(!any(str_detect(`Gene Annotation`, "GT"))) %>%
+  ungroup() %>%
   filter(`Gene Type` == "CAZyme") %>%
   mutate( # Extract cazyme subfam string for catalytic subfamilies
     cazy_subfam = case_when(
@@ -600,7 +603,10 @@ cazyme_data <- compiled_cgc %>%
   filter(str_detect(cazy_subfam, "GH|PL|CE")) %>% # Filter to catabolic CAZymes
   mutate( # Get cazyme fam
     cazy_fam = str_remove(cazy_subfam, "_.*")
-  ) %>% # Add signalP predictions
+  ) %>% # Get cazy type
+  mutate(
+    cazy_type = str_extract(cazy_fam, "GH|PL|CE")
+    ) %>% # Add signalP predictions
   left_join(
     select(compiled_signalp, mag, protein_id, Prediction),
     by = c("Protein ID" = "protein_id", "mag")) %>% 
@@ -610,11 +616,17 @@ cazyme_data <- compiled_cgc %>%
   )
 
 head(cazyme_data)
+```
+
+Let's make sure the joining worked properly; there shuold be 501,943 entries and no NAs:
+
+```{r}
 # Check for NAs in key columns
 na_summary <- cazyme_data %>%
   summarise(
     na_cazy_subfam = sum(is.na(cazy_subfam)),
     na_cazy_fam = sum(is.na(cazy_fam)),
+    na_cazy_type = sum(is.na(cazy_type)),
     na_Prediction = sum(is.na(Prediction)),
     na_genus = sum(is.na(genus)),
     na_family = sum(is.na(family)),
@@ -622,12 +634,212 @@ na_summary <- cazyme_data %>%
   )
 print(na_summary)
 ```
+
+Now, I can summarize the CAZyme and polysaccharide potential at the family level:
+
 ```{r}
+# Summarize total CGCs per MAG
+cgcs_per_mag <- cazyme_data %>%
+  group_by(mag) %>%
+  summarise(n_CGCs = n_distinct(`CGC#`))
+
+# Summarize total CAZymes per cazy_type per MAG
+cazymes_per_type <- cazyme_data %>%
+  group_by(mag, cazy_type) %>%
+  summarise(n_cazymes = n(), .groups = "drop") %>%
+  pivot_wider(names_from = cazy_type, values_from = n_cazymes, names_prefix = "n_", values_fill = 0)
+
+# Summarize number of CGCs per MAG with at least one CAZyme with a signal peptide
+cgcs_signalp_per_mag <- cazyme_data %>%
+  filter(Prediction != "OTHER") %>%
+  group_by(mag) %>%
+  summarise(n_CGCs_signalp = n_distinct(`CGC#`))
+
+# Summarize CAZymes per cazy_type with signal peptide (Prediction != "OTHER")
+cazymes_signalp <- cazyme_data %>%
+  filter(Prediction != "OTHER") %>%
+  group_by(mag, cazy_type) %>%
+  summarise(n_cazymes_signalp = n(), .groups = "drop") %>%
+  pivot_wider(names_from = cazy_type, values_from = n_cazymes_signalp, names_prefix = "n_signalp_", values_fill = 0)
+
+# Compile MAG level summaries
+mag_cazy_summary <- cgcs_per_mag %>%
+  left_join(cazymes_per_type, by = "mag") %>%
+  left_join(cazymes_signalp, by = "mag") %>%
+  left_join(cgcs_signalp_per_mag, by = "mag") %>%
+  left_join(
+    full_report %>%
+      select(user_genome, domain, phylum, class, order, family, genus, species, Completeness, Contamination, Contig_N50, Genome_Size, Total_Contigs, Max_Contig_Length),
+    by = c("mag" = "user_genome")
+  ) %>%
+  mutate(
+    n_CGCs_signalp = replace_na(n_CGCs_signalp, 0),
+    across(starts_with("n_signalp_"), ~replace_na(., 0))
+  )
+```
+
+Let's download the bac120 tree and metadata from GTDB release 226 to use as a baseline for plotting the cazyme information:
+
+```{bash, eval = FALSE}
+curl -o analyses/bacteroides_pul/mag_pul_summary/bac120_r226.tree https://data.ace.uq.edu.au/public/gtdb/data/releases/release226/226.0/bac120_r226.tree
+curl -o analyses/bacteroides_pul/mag_pul_summary/bac120_taxonomy_r226.tsv https://data.ace.uq.edu.au/public/gtdb/data/releases/release226/226.0/bac120_taxonomy_r226.tsv
+curl -o analyses/bacteroides_pul/mag_pul_summary/bac120_metadata_r226.tsv.gz https://data.ace.uq.edu.au/public/gtdb/data/releases/latest/bac120_metadata.tsv.gz
+```
+
+We will do the summaries at the family level, so we need to subset the GTDB tree to the families included in our MAGs:
+
+```{r}
+library(ape)
 library(treeio)
+
+# Load the tree and taxonomy
+bac120_tree <- read.tree("analyses/bacteroides_pul/mag_pul_summary/bac120_r226.tree")
+bac120_taxonomy <- read_delim("analyses/bacteroides_pul/mag_pul_summary/bac120_taxonomy_r226.tsv", col_names = FALSE, delim = "\t") %>%
+  rename(genome = X1, taxonomy = X2) %>%
+  separate(taxonomy,
+           into = c("domain", "phylum", "class", "order", "family", "genus", "species"),
+           sep = ";",
+           fill = "right",
+           remove = FALSE) %>%
+  mutate(across(c(domain, phylum, class, order, family, genus, species),
+                ~ sub("^[a-z]__", "", .)))
+
+# Get list of target families
+families <- full_report %>% 
+  filter(Contamination <= 10 & Completeness >= 90 & Contig_N50 >= 50000) %>% 
+  pull(family) %>%
+  unique
+
+# Key between target genome labels and taxonomy
+family_genomes_key <- bac120_taxonomy %>%
+  filter(family %in% families & genome %in% bac120_tree$tip.label) %>%
+  group_by(family) %>%
+  slice_sample(n = 1) %>%
+  ungroup()
+
+# Target genome labels for filtering
+family_genomes <-family_genomes_key %>%
+  pull(genome)
+
+# Subset tree to genomes from target family
+family_tree <- keep.tip(bac120_tree, family_genomes)
+```
+
+Let's now integrate the tree data with the family genome key and create the base tree plot:
+
+```{r}
 library(ggtree)
 
-bac120_tree <- read.tree("bac120.tree")
+# Tree plot with tip labels as family names
+family_tree_plot <- ggtree(family_tree) %<+% family_genomes_key +
+  geom_tiplab(aes(label = family), size = 3, align = TRUE)
+
+# Add label key to cazy data for plotting
+plot_data <-  mag_cazy_summary %>%
+  left_join(family_genomes_key %>% select(family, genome), by = "family")
 ```
+
+I made a function to plot the distributions of cazymes and CGCs to align to the family tree:
+
+```{r}
+# Function to make th percentile plot
+make_percentile_plot <- function(summary_data, variable, tip_order, phylum_col = "phylum", genome_col = "genome", dot_color = "#252eb0", line_color = "gray50") {
+  var_sym <- rlang::ensym(variable)
+  phylum_sym <- rlang::ensym(phylum_col)
+  genome_sym <- rlang::ensym(genome_col)
+  
+  # Filter and order data by tree tip order
+  plot_df <- summary_data %>%
+    filter(.data[[rlang::as_string(genome_sym)]] %in% tip_order) %>%
+    mutate(y_plot = factor(.data[[rlang::as_string(genome_sym)]], levels = tip_order)) %>%
+    group_by(y_plot, !!phylum_sym) %>%
+    summarise(
+      median = median(!!var_sym, na.rm = TRUE),
+      p2.5 = quantile(!!var_sym, 0.025, na.rm = TRUE),
+      p97.5 = quantile(!!var_sym, 0.975, na.rm = TRUE),
+      .groups = "drop"
+    )
+  
+  # Calculate phylum boundaries based on tip order
+  phylum_bounds <- plot_df %>%
+    group_by(!!phylum_sym) %>%
+    summarise(
+      top = min(as.numeric(y_plot)),
+      bottom = max(as.numeric(y_plot)),
+      label_genome = y_plot[which.min(as.numeric(y_plot))],
+      .groups = "drop"
+    )
+  
+  # Plot
+  p <- ggplot(plot_df, aes(y = y_plot)) +
+    geom_linerange(aes(xmin = p2.5, xmax = p97.5), size = 1, color = line_color) +
+    geom_point(aes(x = median), size = 2, color = dot_color) +
+    labs(x = rlang::as_label(var_sym), y = NULL) +
+    theme_minimal(base_size = 10) +
+    theme(
+      axis.text.y = element_blank(), 
+      axis.title.y = element_blank(),
+      axis.text.x = element_text(color = "black"),
+      panel.border = element_rect(color = "black", fill = NA, linewidth = 0.75)
+    )
+  
+  # Add horizontal lines between phyla (except after last)
+  if (nrow(phylum_bounds) > 1) {
+    for (i in seq_len(nrow(phylum_bounds) - 1)) {
+      p <- p + geom_hline(yintercept = phylum_bounds$bottom[i] + 0.5, linetype = "dotted", color = "gray40")
+    }
+  }
+  
+  # Add phylum labels aligned with the top taxon in each phylum
+  p <- p + geom_text(
+    data = phylum_bounds,
+    aes(x = -Inf, y = top, label = !!phylum_sym),
+    hjust = -0.1, vjust = 0.5, size = 3, fontface = "bold", inherit.aes = FALSE
+  )
+  
+  return(p)
+}
+```
+
+Now, let's generate the plots for GHs, PLs, CGCs, with and without signal peptides:
+
+```{r}
+library(aplot)
+
+# Get tip labels ordered by their y coordinate (as plotted)
+tree_data <- family_tree_plot$data
+tip_order <- tree_data %>%
+  filter(isTip) %>%
+  arrange(y) %>%
+  pull(label)
+
+# Make all iqr plots for all variables
+cgc_iqr <- make_percentile_plot(plot_data, n_CGCs, tip_order)
+gh_iqr <- make_percentile_plot(plot_data, n_GH, tip_order)
+pl_iqr <- make_percentile_plot(plot_data, n_PL, tip_order)
+signalp_cgc_iqr <- make_percentile_plot(plot_data, n_CGCs_signalp, tip_order)
+signalp_gh_iqr <- make_percentile_plot(plot_data, n_signalp_GH, tip_order)
+signalp_pl_iqr <- make_percentile_plot(plot_data, n_signalp_PL, tip_order)
+
+# Align iqr plots to the left of the tree
+cgc_iqr_plot <- cgc_iqr %>% insert_left(family_tree_plot, width = 0.75)
+gh_iqr_plot <- gh_iqr %>% insert_left(family_tree_plot, width = 0.75)
+pl_iqr_plot <- pl_iqr %>% insert_left(family_tree_plot, width = 0.75)
+signalp_cgc_iqr_plot <- signalp_cgc_iqr %>% insert_left(family_tree_plot, width = 0.75)
+signalp_gh_iqr_plot <- signalp_gh_iqr %>% insert_left(family_tree_plot, width = 0.75)
+signalp_pl_iqr_plot <- signalp_pl_iqr %>% insert_left(family_tree_plot, width = 0.75)
+
+
+# Save plots
+ggsave("document/plots/cgc_iqr.pdf", cgc_iqr_plot, width = 9, height = 9)
+ggsave("document/plots/gh_iqr.pdf", gh_iqr_plot, width = 9, height = 9)
+ggsave("document/plots/pl_iqr.pdf", pl_iqr_plot, width = 9, height = 9)
+ggsave("document/plots/signalp_cgc_iqr.pdf", signalp_cgc_iqr_plot, width = 9, height = 9)
+ggsave("document/plots/signalp_gh_iqr.pdf", signalp_gh_iqr_plot, width = 9, height = 9)
+ggsave("document/plots/signalp_pl_iqr.pdf", signalp_pl_iqr_plot, width = 9, height = 9)
+```
+
+### Dissecting CGC content variation within the family Bacteroidaceae
 
 ```{r}
 #TRASH

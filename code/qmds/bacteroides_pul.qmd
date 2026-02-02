@@ -511,7 +511,7 @@ sbatch code/scripts/bacteroides_pul/isabl1_mags_signalp_1-9999.sh # 6702650
 sbatch code/scripts/bacteroides_pul/isabl1_mags_signalp_10000-10360.sh # 6720114
 ```
 
-### Summarizring PUL content across MAGs
+### Comparing CGC content across bacterial families
 
 We start by compiling the results of the CGC predictions across all MAGs:
 
@@ -829,7 +829,6 @@ signalp_cgc_iqr_plot <- signalp_cgc_iqr %>% insert_left(family_tree_plot, width 
 signalp_gh_iqr_plot <- signalp_gh_iqr %>% insert_left(family_tree_plot, width = 0.75)
 signalp_pl_iqr_plot <- signalp_pl_iqr %>% insert_left(family_tree_plot, width = 0.75)
 
-
 # Save plots
 ggsave("document/plots/cgc_iqr.pdf", cgc_iqr_plot, width = 9, height = 9)
 ggsave("document/plots/gh_iqr.pdf", gh_iqr_plot, width = 9, height = 9)
@@ -839,7 +838,230 @@ ggsave("document/plots/signalp_gh_iqr.pdf", signalp_gh_iqr_plot, width = 9, heig
 ggsave("document/plots/signalp_pl_iqr.pdf", signalp_pl_iqr_plot, width = 9, height = 9)
 ```
 
+### Dynamics of Bacteroidota families following antibiotic exposure
+
+Based on the previous comparison, the families in the phylum Bacteroidota are clearly the ones with the highest content of CGCs with potential for extracellular polysaccharide degradation. That includes some families that seem common, such as Tannerellaceae and Rikenellaceae. Now, I want to test whether there is differential prevalence of taxa in this phylum after the antibiotic prophylaxis to determine what lineages beyond Bacteroides with high CGC content could also engage in cooperative polysaccharide breakdown in our patients. For that, I performed a linear mixed regression of detection (>0.1% relative abundance) of each family after at least one day of quinolone prophylaxis and plotted the family-specific coefficients:
+
+```{r}
+library(lme4)
+library(broom.mixed)
+
+# Get family-level relative abundances
+tblrel_family_meta <- prep_taxa_counts("family")
+
+# Define target families and abundance columns
+target_families <- c("Bacteroidaceae", "Barnesiellaceae", "Dysgonomonadaceae", "Marinifilaceae", "Rikenellaceae", "Tannerellaceae")
+abund_cols <- paste0(target_families, "_abund")
+
+# For each patient, determine first day of quinolone exposure
+quin_start <- tblpatientday_clinical %>%
+  filter(quinolones == 1 & DayRelativeToNearestHCT <= 30) %>%
+  group_by(PatientID) %>%
+  summarise(first_quin_day = min(DayRelativeToNearestHCT, na.rm = TRUE))
+
+# Subset to samples up to day 30 after HCT
+tbl_prevalence <- tblrel_family_meta %>%
+  filter(DayRelativeToNearestHCT <= 30) %>% # Subset to samples up to day 30 after HCT
+  # Merge with clinical table to get quinolone exposure
+  left_join(tblpatientday_clinical %>% select(PatientID, DayRelativeToNearestHCT, quinolones), 
+            by = c("PatientID", "DayRelativeToNearestHCT")) %>% 
+  left_join(quin_start, by = "PatientID") %>%
+  # Annotate each sample as pre- or post-prophylaxis
+  mutate(
+    prophylaxis_status = case_when(
+      is.na(first_quin_day) ~ "pre", # never received quinolones
+      DayRelativeToNearestHCT < first_quin_day ~ "pre",
+      DayRelativeToNearestHCT >= (first_quin_day + 1) ~ "post",
+      TRUE ~ NA_character_
+    )
+  ) %>%
+  filter(!is.na(prophylaxis_status) & prophylaxis_status %in% c("pre", "post"))
+
+# Set reference level for prophylaxis_status to "pre"
+tbl_prevalence$prophylaxis_status <- factor(tbl_prevalence$prophylaxis_status, levels = c("pre", "post"))
+
+# For each family, create a binary prevalence column (1 if abundance >= 0.001, else 0)
+for (fam in target_families) {
+  col <- paste0(fam, "_abund")
+  prev_col <- paste0(fam, "_prev")
+  tbl_prevalence[[prev_col]] <- as.integer(tbl_prevalence[[col]] >= 0.001)
+}
+
+# Store the models (not summaries)
+prevalence_results <- list()
+
+for (fam in target_families) {
+  prev_col <- paste0(fam, "_prev")
+  dat <- tbl_prevalence %>%
+    filter(!is.na(.data[[prev_col]]), !is.na(prophylaxis_status))
+  
+  # Fit model and store the MODEL OBJECT (not summary)
+  model <- glmer(
+    formula = as.formula(paste(prev_col, "~ prophylaxis_status + (1|PatientID)")),
+    data = dat,
+    family = binomial
+  )
+  
+  prevalence_results[[fam]] <- model  # Store model, not summary(model)
+}
+
+# Now extract effects with broom.mixed
+prevalence_effects <- bind_rows(
+  lapply(names(prevalence_results), function(fam) {
+    mod <- prevalence_results[[fam]]
+    tidy_mod <- broom.mixed::tidy(mod, effects = "fixed", conf.int = TRUE)
+    tidy_mod %>%
+      filter(term == "prophylaxis_statuspost") %>%
+      mutate(family = fam)
+  })
+)
+
+# Plot (log odds ratio)
+bacteroidota_detection <- ggplot(prevalence_effects, aes(x = factor(family, levels = c("Bacteroidaceae", "Tannerellaceae", "Rikenellaceae", "Barnesiellaceae", "Marinifilaceae", "Dysgonomonadaceae")), y = estimate, ymin = conf.low, ymax = conf.high)) +
+  geom_pointrange(size = 0.3) +
+  geom_hline(yintercept = 0, linetype = "dashed", color = "gray50") +
+  labs(
+    x = "Family",
+    y = "Effect of prophylaxis on detection (>0.1%)"
+  ) +
+  custom_theme+
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+
+# Save the plot
+ggsave("document/plots/bacteroidota_prophylaxis_effect.pdf", width = 3.5, height = 5)
+```
+
+Let's also plot the distribution of median relative abundances per patient after quinolone prophylaxis for each family: 
+
+```{r}  
+# Calculate median abundance per patient for each family
+patient_medians <- post_tbl %>%
+  filter(prophylaxis_status == "post") %>%
+  select(PatientID, all_of(paste0(target_families, "_abund"))) %>%
+  pivot_longer(
+    cols = ends_with("_abund"),
+    names_to = "family",
+    values_to = "abundance"
+  ) %>%
+  mutate(family = str_remove(family, "_abund$")) %>%
+  group_by(PatientID, family) %>%
+  summarise(median_abundance = median(abundance, na.rm = TRUE), .groups = "drop")
+
+# Plot distributions
+bacteroidota_fam_abund <- ggplot(patient_medians, 
+  aes(x = factor(family,levels = c("Bacteroidaceae", "Tannerellaceae", "Rikenellaceae", "Barnesiellaceae", "Marinifilaceae", "Dysgonomonadaceae")),
+    y = log10(median_abundance + 1e-5))) +
+  geom_boxplot(outlier.shape = NA, alpha = 0.7, fill = "gray75") +
+  geom_jitter(width = 0.2, alpha = 0.2, color = "gray20") +
+  labs(
+  x = "Family",
+  y = "log10(median relative abundance per patient)"
+  ) +
+  custom_theme +
+  theme(legend.position = "none",
+        axis.text.x = element_text(angle = 45, hjust = 1))
+
+# Save plot
+ggsave("document/plots/bacteroidota_fam_abund.pdf", bacteroidota_fam_abund, width = 4, height = 5)
+```
+
+And run a Friedman test and paired Wilcoxon signed-rank test between all pairs of families to compare:
+
+```{r}
+# Pivot to wide format for the Friedman test (one row per patient, one column per family)
+patient_medians_wide <- patient_medians %>%
+  pivot_wider(names_from = family, values_from = median_abundance)
+
+# Friedman test
+friedman_data <- patient_medians_wide %>%
+  select(-PatientID)
+friedman_matrix <- as.matrix(friedman_data)
+friedman_result <- friedman.test(friedman_matrix)
+
+# Paired Wilcoxon signed-rank tests for all family pairs
+family_names <- colnames(friedman_matrix)
+wilcox_results <- combn(family_names, 2, simplify = FALSE, FUN = function(pair) {
+  test <- wilcox.test(
+    friedman_matrix[, pair[1]],
+    friedman_matrix[, pair[2]],
+    paired = TRUE,
+    exact = FALSE
+  )
+  tibble(
+    family1 = pair[1],
+    family2 = pair[2],
+    p.value = test$p.value,
+    statistic = test$statistic
+  )
+}) %>% bind_rows()
+
+# Adjust p-values for multiple testing (FDR)
+wilcox_results <- wilcox_results %>%
+  mutate(p.adj = p.adjust(p.value, method = "fdr"))
+
+# Print results
+print(friedman_result)
+print(wilcox_results)
+```
+
+Now let's make a bar plot showing the number of patients in which each family has relative abundance >= 0.1 in at least one sample post prophylaxis:
+
+```{r}
+# For each patient and family, check if any sample has abundance >= 0.1
+patient_family_present <- tbl_prevalence %>%
+  filter(prophylaxis_status == "post") %>%
+  select(PatientID, all_of(paste0(target_families, "_abund"))) %>%
+  pivot_longer(
+    cols = ends_with("_abund"),
+    names_to = "family",
+    values_to = "abundance"
+  ) %>%
+  mutate(family = str_remove(family, "_abund$")) %>%
+  group_by(PatientID, family) %>%
+  summarise(present = any(abundance >= 0.1, na.rm = TRUE), .groups = "drop")
+
+# Count number of patients per family (including 0 for families with no patients meeting condition)
+family_patient_counts <- patient_family_present %>%
+  filter(present) %>%
+  group_by(family) %>%
+  summarise(n_patients = n_distinct(PatientID)) %>%
+  ungroup() %>%
+  # Ensure all target families are included, filling with 0 if missing
+  right_join(tibble(family = target_families), by = "family") %>%
+  mutate(n_patients = replace_na(n_patients, 0))
+
+# Bar plot
+bacteroidota_fam_0.1 <- ggplot(family_patient_counts, 
+  aes(x = factor(family, levels = c("Bacteroidaceae", "Tannerellaceae", "Rikenellaceae", "Barnesiellaceae", "Marinifilaceae", "Dysgonomonadaceae")), 
+      y = n_patients)) +
+  geom_col(alpha = 0.7, fill = "gray75", color = "black") +
+  geom_text(aes(label = n_patients), vjust = -0.5, size = 3) +
+  labs(
+    x = "Family",
+    y = "Patients with ≥ 10% rel. abundance post-prophylaxis"
+  ) +
+  custom_theme +
+  theme(legend.position = "none",
+        axis.text.x = element_text(angle = 45, hjust = 1))
+
+# Save the plot
+ggsave("document/plots/bacteroidota_fam_0.1.pdf", bacteroidota_fam_0.1, width = 4, height = 5)
+```
+
 ### Dissecting CGC content variation within the family Bacteroidaceae
+
+
+### Substrates
+
+```{r}
+filter(cazyme_data, Prediction != "OTHER" & cazy_type == "GH") %>%
+  pull(cazy_fam) %>%
+  unique()
+
+```
+
+
+## TRASH
 
 ```{r}
 #TRASH

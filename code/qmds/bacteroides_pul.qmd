@@ -484,7 +484,11 @@ full_report <- left_join(gtdb, checkm, by = c("user_genome" = "Name")) %>%
            fill = "right",
            remove = FALSE) %>%
   mutate(across(c(domain, phylum, class, order, family, genus, species),
-                ~ sub("^[a-z]__","", .)))
+                ~ sub("^[a-z]__","", .))) %>%
+  mutate(family = case_when(
+                            str_detect(genus, "revotella") ~ "Prevotellaceae",
+                            TRUE ~ family
+  ))
 
 # Get list of MAGs with >90% completion and <10% contamination
 nc_mags <- full_report %>%
@@ -702,11 +706,15 @@ bac120_taxonomy <- read_delim("analyses/bacteroides_pul/mag_pul_summary/bac120_t
            fill = "right",
            remove = FALSE) %>%
   mutate(across(c(domain, phylum, class, order, family, genus, species),
-                ~ sub("^[a-z]__", "", .)))
+                ~ sub("^[a-z]__", "", .))) %>%
+  mutate(family = case_when(
+                            str_detect(genus, "revotella") ~ "Prevotellaceae",
+                            TRUE ~ family
+  ))
 
 # Get list of target families
 families <- full_report %>% 
-  filter(Contamination <= 10 & Completeness >= 90 & Contig_N50 >= 50000) %>% 
+  filter(Contamination <= 10 & Completeness >= 90 & Contig_N50 >= 50000 & family != "UBA932") %>% 
   pull(family) %>%
   unique
 
@@ -850,7 +858,7 @@ library(broom.mixed)
 tblrel_family_meta <- prep_taxa_counts("family")
 
 # Define target families and abundance columns
-target_families <- c("Bacteroidaceae", "Barnesiellaceae", "Dysgonomonadaceae", "Marinifilaceae", "Rikenellaceae", "Tannerellaceae")
+target_families <- c("Bacteroidaceae", "Barnesiellaceae", "Dysgonomonadaceae", "Marinifilaceae", "Rikenellaceae", "Tannerellaceae", "Prevotellaceae")
 abund_cols <- paste0(target_families, "_abund")
 
 # For each patient, determine first day of quinolone exposure
@@ -917,7 +925,7 @@ prevalence_effects <- bind_rows(
 )
 
 # Plot (log odds ratio)
-bacteroidota_detection <- ggplot(prevalence_effects, aes(x = factor(family, levels = c("Bacteroidaceae", "Tannerellaceae", "Rikenellaceae", "Barnesiellaceae", "Marinifilaceae", "Dysgonomonadaceae")), y = estimate, ymin = conf.low, ymax = conf.high)) +
+bacteroidota_detection <- ggplot(prevalence_effects, aes(x = factor(family, levels = c("Bacteroidaceae", "Tannerellaceae", "Prevotellaceae", "Rikenellaceae", "Barnesiellaceae", "Marinifilaceae", "Dysgonomonadaceae")), y = estimate, ymin = conf.low, ymax = conf.high)) +
   geom_pointrange(size = 0.3) +
   geom_hline(yintercept = 0, linetype = "dashed", color = "gray50") +
   labs(
@@ -949,7 +957,7 @@ patient_medians <- post_tbl %>%
 
 # Plot distributions
 bacteroidota_fam_abund <- ggplot(patient_medians, 
-  aes(x = factor(family,levels = c("Bacteroidaceae", "Tannerellaceae", "Rikenellaceae", "Barnesiellaceae", "Marinifilaceae", "Dysgonomonadaceae")),
+  aes(x = factor(family,levels = c("Bacteroidaceae", "Tannerellaceae", "Prevotellaceae", "Rikenellaceae", "Barnesiellaceae", "Marinifilaceae", "Dysgonomonadaceae")),
     y = log10(median_abundance + 1e-5))) +
   geom_boxplot(outlier.shape = NA, alpha = 0.7, fill = "gray75") +
   geom_jitter(width = 0.2, alpha = 0.2, color = "gray20") +
@@ -1032,7 +1040,7 @@ family_patient_counts <- patient_family_present %>%
 
 # Bar plot
 bacteroidota_fam_0.1 <- ggplot(family_patient_counts, 
-  aes(x = factor(family, levels = c("Bacteroidaceae", "Tannerellaceae", "Rikenellaceae", "Barnesiellaceae", "Marinifilaceae", "Dysgonomonadaceae")), 
+  aes(x = factor(family, levels = c("Bacteroidaceae", "Tannerellaceae", "Prevotellaceae", "Rikenellaceae", "Barnesiellaceae", "Marinifilaceae", "Dysgonomonadaceae")), 
       y = n_patients)) +
   geom_col(alpha = 0.7, fill = "gray75", color = "black") +
   geom_text(aes(label = n_patients), vjust = -0.5, size = 3) +
@@ -1050,6 +1058,66 @@ ggsave("document/plots/bacteroidota_fam_0.1.pdf", bacteroidota_fam_0.1, width = 
 
 ### Dissecting CGC content variation within the family Bacteroidaceae
 
+Let's start by subsetting the GTDB tree to the Bacteroidaceae taxa in our dataset:
+
+```{r}
+# Get list of target species
+bacteroidaceae_spp <- full_report %>% 
+  filter(Contamination <= 10 & Completeness >= 90 & Contig_N50 >= 50000 & family == "Bacteroidaceae" & species != "") %>% 
+  pull(species) %>%
+  unique
+
+# Key between target genome labels and taxonomy
+bacteroidaceae_genomes_key <- bac120_taxonomy %>%
+  #filter(order == "Bacteroidales" & genome %in% bac120_tree$tip.label) %>%
+  filter(species %in% bacteroidaceae_spp & genome %in% bac120_tree$tip.label) %>%
+  group_by(species) %>%
+  slice_sample(n = 1) %>%
+  ungroup()
+
+# Target genome labels for filtering
+bacteroidaceae_genomes <-bacteroidaceae_genomes_key %>%
+  pull(genome)
+
+# Subset tree to genomes from target family
+bacteroidaceae_tree <- keep.tip(bac120_tree, bacteroidaceae_genomes)
+```
+
+Let's now integrate the tree data with the family genome key and create the base tree plot:
+
+```{r}
+# Tree plot with tip labels as family names
+bacteroidaceae_tree_plot <- ggtree(bacteroidaceae_tree) %<+% bacteroidaceae_genomes_key +
+  geom_tiplab(aes(label = species), size = 3, align = F)
+
+# Add label key to cazy data for plotting
+bacteroidaceae_plot_data <-  mag_cazy_summary %>%
+  left_join(bacteroidaceae_genomes_key %>% select(species, genome), by = "species")
+```
+
+```{r}
+# Get tip labels ordered by their y coordinate (as plotted)
+bacteroidaceae_tip_order <- bacteroidaceae_tree_plot$data %>%
+  filter(isTip) %>%
+  arrange(y) %>%
+  pull(label)
+
+# Make all iqr plots for all variables
+bacteroidaceae_cgc_iqr <- make_percentile_plot(bacteroidaceae_plot_data, n_CGCs, bacteroidaceae_tip_order)
+gh_iqr <- make_percentile_plot(plot_data, n_GH, tip_order)
+pl_iqr <- make_percentile_plot(plot_data, n_PL, tip_order)
+signalp_cgc_iqr <- make_percentile_plot(plot_data, n_CGCs_signalp, tip_order)
+signalp_gh_iqr <- make_percentile_plot(plot_data, n_signalp_GH, tip_order)
+signalp_pl_iqr <- make_percentile_plot(plot_data, n_signalp_PL, tip_order)
+
+# Align iqr plots to the left of the tree
+cgc_iqr_plot <- bacteroidaceae_cgc_iqr %>% insert_left(bacteroidaceae_tree_plot, width = 0.75)
+gh_iqr_plot <- gh_iqr %>% insert_left(family_tree_plot, width = 0.75)
+pl_iqr_plot <- pl_iqr %>% insert_left(family_tree_plot, width = 0.75)
+signalp_cgc_iqr_plot <- signalp_cgc_iqr %>% insert_left(family_tree_plot, width = 0.75)
+signalp_gh_iqr_plot <- signalp_gh_iqr %>% insert_left(family_tree_plot, width = 0.75)
+signalp_pl_iqr_plot <- signalp_pl_iqr %>% insert_left(family_tree_plot, width = 0.75)
+```
 
 ### Substrates
 

@@ -925,7 +925,7 @@ prevalence_effects <- bind_rows(
 )
 
 # Plot (log odds ratio)
-bacteroidota_detection <- ggplot(prevalence_effects, aes(x = factor(family, levels = c("Bacteroidaceae", "Tannerellaceae", "Prevotellaceae", "Rikenellaceae", "Barnesiellaceae", "Marinifilaceae", "Dysgonomonadaceae")), y = estimate, ymin = conf.low, ymax = conf.high)) +
+bacteroidota_detection <- ggplot(prevalence_effects, aes(x = factor(family, levels = c("Prevotellaceae", "Bacteroidaceae", "Tannerellaceae", "Rikenellaceae", "Barnesiellaceae", "Marinifilaceae", "Dysgonomonadaceae")), y = estimate, ymin = conf.low, ymax = conf.high)) +
   geom_pointrange(size = 0.3) +
   geom_hline(yintercept = 0, linetype = "dashed", color = "gray50") +
   labs(
@@ -1083,7 +1083,7 @@ bacteroidaceae_genomes <-bacteroidaceae_genomes_key %>%
 bacteroidaceae_tree <- keep.tip(bac120_tree, bacteroidaceae_genomes)
 ```
 
-Let's now integrate the tree data with the family genome key and create the base tree plot:
+Now, let's integrate the tree data with the family genome key and create the base tree plot:
 
 ```{r}
 # Tree plot with tip labels as family names
@@ -1095,6 +1095,8 @@ bacteroidaceae_plot_data <-  mag_cazy_summary %>%
   left_join(bacteroidaceae_genomes_key %>% select(species, genome), by = "species")
 ```
 
+And now we can plot the distribution of CGCs across species of the Bacteroidaceae:
+
 ```{r}
 # Get tip labels ordered by their y coordinate (as plotted)
 bacteroidaceae_tip_order <- bacteroidaceae_tree_plot$data %>%
@@ -1104,20 +1106,26 @@ bacteroidaceae_tip_order <- bacteroidaceae_tree_plot$data %>%
 
 # Make all iqr plots for all variables
 bacteroidaceae_cgc_iqr <- make_percentile_plot(bacteroidaceae_plot_data, n_CGCs, bacteroidaceae_tip_order)
-gh_iqr <- make_percentile_plot(plot_data, n_GH, tip_order)
-pl_iqr <- make_percentile_plot(plot_data, n_PL, tip_order)
-signalp_cgc_iqr <- make_percentile_plot(plot_data, n_CGCs_signalp, tip_order)
-signalp_gh_iqr <- make_percentile_plot(plot_data, n_signalp_GH, tip_order)
-signalp_pl_iqr <- make_percentile_plot(plot_data, n_signalp_PL, tip_order)
+bacteroidaceae_gh_iqr <- make_percentile_plot(bacteroidaceae_plot_data, n_GH, bacteroidaceae_tip_order)
+bacteroidaceae_pl_iqr <- make_percentile_plot(bacteroidaceae_plot_data, n_PL, bacteroidaceae_tip_order)
+bacteroidaceae_signalp_cgc_iqr <- make_percentile_plot(bacteroidaceae_plot_data, n_CGCs_signalp, bacteroidaceae_tip_order)
+bacteroidaceae_signalp_gh_iqr <- make_percentile_plot(bacteroidaceae_plot_data, n_signalp_GH, bacteroidaceae_tip_order)
+bacteroidaceae_signalp_pl_iqr <- make_percentile_plot(bacteroidaceae_plot_data, n_signalp_PL, bacteroidaceae_tip_order)
 
 # Align iqr plots to the left of the tree
-cgc_iqr_plot <- bacteroidaceae_cgc_iqr %>% insert_left(bacteroidaceae_tree_plot, width = 0.75)
-gh_iqr_plot <- gh_iqr %>% insert_left(family_tree_plot, width = 0.75)
-pl_iqr_plot <- pl_iqr %>% insert_left(family_tree_plot, width = 0.75)
-signalp_cgc_iqr_plot <- signalp_cgc_iqr %>% insert_left(family_tree_plot, width = 0.75)
-signalp_gh_iqr_plot <- signalp_gh_iqr %>% insert_left(family_tree_plot, width = 0.75)
-signalp_pl_iqr_plot <- signalp_pl_iqr %>% insert_left(family_tree_plot, width = 0.75)
+bacteroidaceae_cgc_iqr_plot <- bacteroidaceae_cgc_iqr %>% insert_left(bacteroidaceae_tree_plot, width = 0.75)
+bacteroidaceae_gh_iqr_plot <- bacteroidaceae_gh_iqr %>% insert_left(bacteroidaceae_tree_plot, width = 0.75)
+bacteroidaceae_pl_iqr_plot <- bacteroidaceae_pl_iqr %>% insert_left(bacteroidaceae_tree_plot, width = 0.75)
+bacteroidaceae_signalp_cgc_iqr_plot <- bacteroidaceae_signalp_cgc_iqr %>% insert_left(bacteroidaceae_tree_plot, width = 0.75)
+bacteroidaceae_signalp_gh_iqr_plot <- bacteroidaceae_signalp_gh_iqr %>% insert_left(bacteroidaceae_tree_plot, width = 0.75)
+bacteroidaceae_signalp_pl_iqr_plot <- bacteroidaceae_signalp_pl_iqr %>% insert_left(bacteroidaceae_tree_plot, width = 0.75)
 ```
+
+These plots dissect the variation in content across the family but they show that *B. fragilis* is one of the speces with the lowest CGC content. Perhaps looking at the predicted PUL substrates or the presence of SusC/SusD homologs would reveal more differences.
+
+### PUL substrate diversity among Bacteroidaceae species
+
+
 
 ### Substrates
 

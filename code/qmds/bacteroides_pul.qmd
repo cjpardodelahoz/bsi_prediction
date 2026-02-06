@@ -1088,7 +1088,7 @@ Now, let's integrate the tree data with the family genome key and create the bas
 ```{r}
 # Tree plot with tip labels as family names
 bacteroidaceae_tree_plot <- ggtree(bacteroidaceae_tree) %<+% bacteroidaceae_genomes_key +
-  geom_tiplab(aes(label = species), size = 3, align = F)
+  geom_tiplab(aes(label = species), size = 3, align = T)
 
 # Add label key to cazy data for plotting
 bacteroidaceae_plot_data <-  mag_cazy_summary %>%
@@ -1125,7 +1125,237 @@ These plots dissect the variation in content across the family but they show tha
 
 ### PUL substrate diversity among Bacteroidaceae species
 
+Because we are now looking within Bacteroidaceae, we will add an additional filter to the CGCs to infer their potential for cooperative polysaccharide degradation: the presence of susC/susD homologs within the CGCs.
 
+For *susD*, we will use the profile HMMs of four PFAMs (PF07980, PF12741, PF12771, PF14322) that encompass SusD-like proteins to run searches on the non-cazyme proteins in the CGCs. Let's download the profile HMMs from Interpro: 
+
+```{bash, eval=FALSE}
+# Download PFAM HMM profiles and decompress
+mkdir -p hmms/susD
+curl -o hmms/susD/PF07980.hmm.gz https://www.ebi.ac.uk/interpro/wwwapi//entry/pfam/PF07980?annotation=hmm
+curl -o hmms/susD/PF12741.hmm.gz https://www.ebi.ac.uk/interpro/wwwapi//entry/pfam/PF12741?annotation=hmm
+curl -o hmms/susD/PF12771.hmm.gz https://www.ebi.ac.uk/interpro/wwwapi//entry/pfam/PF12771?annotation=hmm
+curl -o hmms/susD/PF14322.hmm.gz https://www.ebi.ac.uk/interpro/wwwapi//entry/pfam/PF14322?annotation=hmm
+gunzip hmms/susD/*
+```
+
+After exploring the prediciton of the susD-like genes, I realized that some clusters don't include the susD either because it's not a part of it or potentially because the contigs break right around them (e.g., in B. fragilis MAGs), whereas the susC are found much more frequently, so I will use them as the PUL indicator to filter the susbtrates in Bacteroidacee.
+
+To detect *susC*, we will use the TCDB classification given by run_dbcan, which detects TonB-dependent outer membrane porins (1.B.14). So let's start by finding the CGCs of Bacteroidaceae that have a susC-like transporter:
+
+```{r}
+# Get Bacteroidaceae MAGs
+bacteroidaceae_mags <- full_report %>% 
+  filter(Contamination <= 10 & Completeness >= 90 & Contig_N50 >= 50000 & family == "Bacteroidaceae" & species != "") %>% 
+  pull(user_genome) %>%
+  unique
+
+# Filter by CGCs by susC presence
+susc_data <- compiled_cgc %>%
+  filter(mag %in% bacteroidaceae_mags & str_detect(`Gene Annotation`, "1.B.14")) %>%
+  select(mag, `CGC#`) %>%
+  distinct(mag,`CGC#`) %>%
+  add_column(susc = TRUE)
+```
+
+Now, we need to compile the PUL substrate predictions from dbCAN:
+
+```{bash, eval=FALSE}
+# Compiled output
+PUL_OUT="analyses/bacteroides_pul/mag_pul_summary/compiled_puls.tsv"
+
+# Get header from first file that exists
+FIRST_MAG=$(head -n 1 ${NC_MAGS})
+FIRST_FILE="analyses/bacteroides_pul/mag_pul_prediction/isabl1/${FIRST_MAG}/substrate_prediction.tsv"
+
+# Write header with added 'mag' column (using sed to get exactly line 2)
+echo -e "mag\t$(sed -n '1p' ${FIRST_FILE})" > ${PUL_OUT}
+
+# Process each MAG
+while IFS= read -r MAG; do
+    TSV_FILE="analyses/bacteroides_pul/mag_pul_prediction/isabl1/${MAG}/substrate_prediction.tsv"
+    
+    if [ -f "${TSV_FILE}" ]; then
+        # Add MAG column and append data (skip header)
+        tail -n +2 ${TSV_FILE} | awk -v mag="${MAG}" 'BEGIN{OFS="\t"} {print mag, $0}' >> ${PUL_OUT}
+        echo "Processed: ${MAG}"
+    else
+        echo "Warning: File not found for ${MAG}"
+    fi
+done < ${NC_MAGS}
+```
+
+Next, I will integrate the PUL and CGC data so I can filter to digestive PULs with substrate predictions and susC:
+
+```{r}
+# Load compiled PUL data, merge substrate predictions and filter to susC-containing CGCs
+compiled_puls <- read_delim("analyses/bacteroides_pul/mag_pul_summary/compiled_puls.tsv") %>%
+  mutate(`CGC#` = str_remove(`#cgcid`, ".*\\|"),
+          substrate = case_when(
+                              is.na(`dbCAN-PUL substrate`) & !is.na(`dbCAN-sub substrate`) ~ `dbCAN-sub substrate`,
+                              TRUE ~ `dbCAN-PUL substrate`
+          )) %>%
+  filter(!str_detect(substrate, ",")) %>%
+  select(mag, `CGC#`, substrate) %>%
+  left_join(susc_data, by = c("mag", "CGC#")) %>%
+  filter(susc == TRUE)
+
+# Integrate substrate data with CGC count
+pul_data <- cazyme_data %>%
+  filter(Prediction != "OTHER" & family == "Bacteroidaceae" & species != "") %>%
+  left_join(compiled_puls, by = c("mag", "CGC#")) %>%
+  filter(!str_detect(substrate, "X|synthesis")) %>%
+  left_join(bacteroidaceae_genomes_key %>% select(species, genome), by = "species") %>%
+  distinct(mag, `CGC#`, .keep_all = T) %>%
+  mutate(substrate = str_replace(substrate, "hostglycan", "host glycan")) %>%
+  group_by(mag, genome, species, substrate) %>%
+  summarise(n_cgcs = n_distinct(`CGC#`), .groups = "drop") %>%
+  group_by(genome, species, substrate) %>%
+  summarise(median_cgcs = median(n_cgcs, na.rm = TRUE), .groups = "drop")
+```
+
+For the figure, I organized the glycan substrates by primary origin and complexity according to their monomer composition and branching:
+
+```{r}
+# Define glycan order by complexity
+plantcellwall_glycans <- c(
+  "pectin",
+  "arabinoxylan",
+  "xyloglucan",
+  "arabinogalactan",
+  "galactomannan",
+  "glucomannan",
+  "alpha-mannan",
+  "beta-mannan",
+  "xylan",
+  "arabinan",
+  "galactan",
+  "alpha-galactan",
+  "beta-galactan"
+)
+plantstorage_glycans <- c(
+  "starch",
+  "beta-glucan",
+  "alpha-glucan",
+  "fructan"
+)
+marinealgae_glycans <- c(
+  "carrageenan",
+  "alginate",
+  "agarose")
+hostanimal_glycans <- c(
+  "host glycan",
+  "mucin",
+  "glycosaminoglycan",
+  "human milk oligosaccharide"
+)
+microbial_glycans <- c(
+  "capsule polysaccharide degradation",
+  "chitin"
+)
+glycan_order <- c(
+  plantcellwall_glycans,
+  plantstorage_glycans,
+  marinealgae_glycans,
+  hostanimal_glycans,
+  microbial_glycans)
+```
+
+Finally, I plotted a bubblemap showing the median number of CGCs per MAG that target each glycan substrate across the Bacteroidaceae species in our dataset, including a barplot showing the total number of substrates each species can degrade:
+
+```{r}
+# Order substrates
+pul_data <- filter(pul_data, substrate %in% glycan_order)
+pul_data$substrate <- factor(pul_data$substrate, levels = glycan_order)
+
+# Create a data frame mapping substrates to their origin
+substrate_origin <- data.frame(
+  substrate = c(plantcellwall_glycans, plantstorage_glycans, marinealgae_glycans, 
+                hostanimal_glycans, microbial_glycans),
+  origin = c(rep("Plant cell wall", length(plantcellwall_glycans)),
+             rep("Plant storage", length(plantstorage_glycans)),
+             rep("Marine algae", length(marinealgae_glycans)),
+             rep("Host/animal", length(hostanimal_glycans)),
+             rep("Microbial", length(microbial_glycans)))
+)
+
+# Define colors for each origin
+origin_colors <- c(
+  "Plant cell wall" = "#99ce91",
+  "Plant storage" = "#ba8e67",
+  "Marine algae" = "#88edc4",
+  "Host/animal" = "#f5c4c4",
+  "Microbial" = "#c9b8e0"
+)
+
+# Ensure substrate is a factor with the same levels as in pul_data
+substrate_origin$substrate <- factor(substrate_origin$substrate, levels = glycan_order)
+
+# Create the main bubblemap without x-axis labels
+substrate_bubblemap <- ggplot(pul_data, 
+  aes(x = substrate, y = genome, size = median_cgcs, color = median_cgcs)) +
+  geom_point(alpha = 0.8) +
+  scale_size_continuous(name = "Median CGCs") +
+  scale_color_viridis_c(name = "Median CGCs", direction = -1) +
+  theme_minimal(base_size = 10) +
+  theme(
+    axis.text.x = element_blank(),
+    axis.text.y = element_blank(),
+    axis.title.y = element_blank(),
+    axis.title.x = element_blank()
+  )
+
+# Create origin tile plot WITH x-axis labels at 45 degrees and vertical legend
+origin_tile_plot <- ggplot(substrate_origin, 
+  aes(x = substrate, y = 1, fill = origin)) +
+  geom_tile(height = 0.1) +
+  scale_fill_manual(values = origin_colors, name = "Glycan origin") +
+  scale_x_discrete(position = "bottom") +
+  scale_y_continuous(expand = c(0, 0)) +
+  theme_minimal(base_size = 10) +
+  theme(
+    axis.text.y = element_blank(),
+    axis.ticks.y = element_blank(),
+    axis.title.y = element_blank(),
+    panel.grid = element_blank(),
+    axis.text.x = element_text(angle = 45, hjust = 1),
+    legend.position = "right"
+  ) +
+  labs(x = "Glycan substrate")
+
+# Summarize number of substrates
+substrate_count_data <- pul_data %>%
+  group_by(genome, species) %>%
+  summarise(n_substrates = n_distinct(substrate), .groups = "drop")
+
+# Create a bar plot of total unique substrates per genome
+substrate_count_plot <- ggplot(substrate_count_data, 
+  aes(x = n_substrates, y = genome)) +
+  geom_col(fill = "gray60", alpha = 0.7) +
+  scale_y_discrete(limits = bacteroidaceae_tip_order) +
+  scale_x_continuous(breaks = c(0, 10, 20)) +
+  theme_minimal(base_size = 10) +
+  theme(
+    axis.text.y = element_blank(),
+    axis.title.y = element_blank(),
+    panel.grid.major.y = element_blank(),
+    panel.grid.major.x = element_blank(),
+    panel.grid.minor.x = element_blank()
+  ) +
+  labs(x = "Substrates")
+
+
+# Align all plots: tree on left, bubblemap in middle, substrate count on right, origin tiles below
+combined_plot <- substrate_bubblemap %>% 
+  insert_left(bacteroidaceae_tree_plot, width = 0.2) %>%
+  insert_right(substrate_count_plot, width = 0.15) %>%
+  insert_bottom(origin_tile_plot, height = 0.02)
+
+# Save the plot
+ggsave(filename = "document/plots/bacteroidaceae_substrate_bubblemap.pdf",
+  plot = combined_plot,
+  height = 5, width = 8)
+```
 
 ### Substrates
 

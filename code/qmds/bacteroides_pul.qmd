@@ -7,6 +7,1370 @@ format:
     code-summary: "Show the code"
 ---
 
+## Carbohydrate degradation potential in gut-microbiome taxa across the tree of life
+
+### PUL predictions across isabl1 MAGs
+
+We'll work with the bins recovered from the isabl1 metagenomes using multi-sample sample binning with VAMB (successfull metaspades assemblies used in enterococcus_diversity_II). Let's symlink the MAG directory:
+
+```{sh}
+ln -s /data1/xavierj/carlos/bsi_prediction/analyses/enterococcus_diversity_II/binning/short/isabl1/vamb/multi_bins /data1/xavierj/carlos/bsi_prediction/analyses/bacteroides_pul/mags
+```
+
+Now, we run CheckM2 on all the bins:
+
+```{sh}
+sbatch code/scripts/bacteroides_pul/checkm2_isabl1.sh
+```
+
+With the CheckM results and the GTDB results I obtained for the Enterococcus projects for these bins, we can now select a subset of MAGs on which to do the PUL predictions:
+
+```{r}
+# Load the CheckM2 and GTDB reports
+gtdb <- read_delim("analyses/enterococcus_diversity_II/binning/short/isabl1/gtdb/gtdbtk.bac120.summary.tsv")
+checkm <- read_delim("analyses/bacteroides_pul/checkm2/quality_report.tsv")
+
+# Join the reports, starting with the GTDB which includes only the MAGs from Bacteria and split the classification string
+full_report <- left_join(gtdb, checkm, by = c("user_genome" = "Name")) %>%
+  separate(classification,
+           into = c("domain", "phylum", "class", "order", "family", "genus", "species"),
+           sep = ";",
+           fill = "right",
+           remove = FALSE) %>%
+  mutate(across(c(domain, phylum, class, order, family, genus, species),
+                ~ sub("^[a-z]__","", .))) %>%
+  mutate(family = case_when(
+                            str_detect(genus, "revotella") ~ "Prevotellaceae",
+                            TRUE ~ family
+  ))
+
+# Get list of MAGs with >90% completion and <10% contamination
+nc_mags <- full_report %>%
+  filter(Contamination <= 10 & Completeness >= 90 & Contig_N50 >= 50000) %>%
+  pull(user_genome) %>%
+  unique
+
+write(nc_mags, "analyses/bacteroides_pul/isabl1_nc_mags.txt")
+```
+
+By filtering MAGs with >90% completeness, <10% contamination, and contig N50 >= 50,000 bp, we en up with 10360 MAGs from 980 species out of 1578 (~62%) of all species detected. All 10 major phyla and ~70-80% of all other taxonomic ranks are represented in this set.
+
+Now, let's predict CGCs and PULs for those selected MAGs:
+
+```{bash, eval=FALSE}
+sbatch code/scripts/bacteroides_pul/isabl1_mags_dbcan_1-9999.sh # 6000821
+sbatch code/scripts/bacteroides_pul/isabl1_mags_dbcan_10000-10360.sh # 6001620
+```
+
+And then predict the signal peptides of the CGC proteins:
+
+```{bash, eval=FALSE}
+sbatch code/scripts/bacteroides_pul/isabl1_mags_signalp_1-9999.sh # 6702650
+sbatch code/scripts/bacteroides_pul/isabl1_mags_signalp_10000-10360.sh # 6720114
+```
+
+### Comparing CGC content across bacterial families
+
+We start by compiling the results of the CGC predictions across all MAGs:
+
+```{bash, eval=FALSE}
+# Directory for results
+mkdir -p analyses/bacteroides_pul/mag_pul_summary
+
+# Ins and outs
+NC_MAGS="analyses/bacteroides_pul/isabl1_nc_mags.txt"
+CGC_OUT="analyses/bacteroides_pul/mag_pul_summary/compiled_cgcs.tsv"
+
+# Get header from first file that exists
+FIRST_MAG=$(head -n 1 ${NC_MAGS})
+FIRST_FILE="analyses/bacteroides_pul/mag_pul_prediction/isabl1/${FIRST_MAG}/cgc_standard_out.tsv"
+
+# Write header with added 'mag' column
+echo -e "mag\t$(head -n 1 ${FIRST_FILE})" > ${CGC_OUT}
+
+# Process each MAG
+while IFS= read -r MAG; do
+    TSV_FILE="analyses/bacteroides_pul/mag_pul_prediction/isabl1/${MAG}/cgc_standard_out.tsv"
+    
+    if [ -f "${TSV_FILE}" ]; then
+        # Add MAG column and append data (skip header)
+        tail -n +2 ${TSV_FILE} | awk -v mag="${MAG}" 'BEGIN{OFS="\t"} {print mag, $0}' >> ${CGC_OUT}
+        echo "Processed: ${MAG}"
+    else
+        echo "Warning: File not found for ${MAG}"
+    fi
+done < ${NC_MAGS}
+```
+
+and also compiling the results of signalP across all MAGs:
+
+```{bash, eval=FALSE}
+# Compiled output
+SIG_OUT="analyses/bacteroides_pul/mag_pul_summary/compiled_signalp.tsv"
+
+# Get header from first file that exists
+FIRST_MAG=$(head -n 1 ${NC_MAGS})
+FIRST_FILE="analyses/bacteroides_pul/mag_pul_prediction/isabl1/${FIRST_MAG}/signalp/prediction_results.txt"
+
+# Write header with added 'mag' column (using sed to get exactly line 2)
+echo -e "mag\t$(sed -n '2p' ${FIRST_FILE})" > ${SIG_OUT}
+
+# Process each MAG
+while IFS= read -r MAG; do
+    TSV_FILE="analyses/bacteroides_pul/mag_pul_prediction/isabl1/${MAG}/signalp/prediction_results.txt"
+    
+    if [ -f "${TSV_FILE}" ]; then
+        # Add MAG column and append data (skip header)
+        tail -n +3 ${TSV_FILE} | awk -v mag="${MAG}" 'BEGIN{OFS="\t"} {print mag, $0}' >> ${SIG_OUT}
+        echo "Processed: ${MAG}"
+    else
+        echo "Warning: File not found for ${MAG}"
+    fi
+done < ${NC_MAGS}
+```
+
+Now, we can integrate the CGC CAZyme predictions, the singalP predictions, the MAG taxonomy, and assembly QC report: 
+
+```{r}
+# For loading large tables
+library(data.table)
+
+# Load the compiled CGC and signalP results
+compiled_cgc <- fread("analyses/bacteroides_pul/mag_pul_summary/compiled_cgcs.tsv")
+compiled_signalp <- fread("analyses/bacteroides_pul/mag_pul_summary/compiled_signalp.tsv") %>%
+  separate(`# ID`, into = c("temp", "cgc", "protein_id"), sep = "\\|", remove = TRUE, extra = "drop") %>%
+  select(mag, cgc, protein_id, Prediction)
+
+# Integrate cazyme and signalP data
+cazyme_data <- compiled_cgc %>%
+  group_by(mag, `CGC#`) %>%
+  filter(!any(str_detect(`Gene Annotation`, "GT"))) %>%
+  ungroup() %>%
+  filter(`Gene Type` == "CAZyme") %>%
+  mutate( # Extract cazyme subfam string for catalytic subfamilies
+    cazy_subfam = case_when(
+    str_count(`Gene Annotation`, "\\|") == 1 ~ str_split_i(`Gene Annotation`, "\\|", 2),
+    str_detect(`Gene Annotation`, "GH|PL|CE") ~ {
+      fields <- str_split(`Gene Annotation`, "\\|", simplify = TRUE)[1,]
+      target_field <- fields[str_detect(fields, "GH|PL|CE")][1]
+      str_remove(target_field, "\\+.*$")
+    },
+    TRUE ~ str_remove(`Gene Annotation`, "^[^|]*\\|")
+    )
+  ) %>%
+  filter(str_detect(cazy_subfam, "GH|PL|CE")) %>% # Filter to catabolic CAZymes
+  mutate( # Get cazyme fam
+    cazy_fam = str_remove(cazy_subfam, "_.*")
+  ) %>% # Get cazy type
+  mutate(
+    cazy_type = str_extract(cazy_fam, "GH|PL|CE")
+    ) %>% # Add signalP predictions
+  left_join(
+    select(compiled_signalp, mag, protein_id, Prediction),
+    by = c("Protein ID" = "protein_id", "mag")) %>% 
+  left_join( # Add taxonomy and assembly statistics
+    select(full_report, user_genome, domain, phylum, class, order, family, genus, species, Completeness, Contamination, Contig_N50, Genome_Size, Total_Contigs, Max_Contig_Length),
+    by = c("mag" = "user_genome")
+  )
+
+head(cazyme_data)
+```
+
+Let's make sure the joining worked properly; there shuold be 501,943 entries and no NAs:
+
+```{r}
+# Check for NAs in key columns
+na_summary <- cazyme_data %>%
+  summarise(
+    na_cazy_subfam = sum(is.na(cazy_subfam)),
+    na_cazy_fam = sum(is.na(cazy_fam)),
+    na_cazy_type = sum(is.na(cazy_type)),
+    na_Prediction = sum(is.na(Prediction)),
+    na_genus = sum(is.na(genus)),
+    na_family = sum(is.na(family)),
+    total_rows = n()
+  )
+print(na_summary)
+```
+
+Now, I can summarize the CAZyme and polysaccharide potential at the family level:
+
+```{r}
+# Summarize total CGCs per MAG
+cgcs_per_mag <- cazyme_data %>%
+  group_by(mag) %>%
+  summarise(n_CGCs = n_distinct(`CGC#`))
+
+# Summarize total CAZymes per cazy_type per MAG
+cazymes_per_type <- cazyme_data %>%
+  group_by(mag, cazy_type) %>%
+  summarise(n_cazymes = n(), .groups = "drop") %>%
+  pivot_wider(names_from = cazy_type, values_from = n_cazymes, names_prefix = "n_", values_fill = 0)
+
+# Summarize number of CGCs per MAG with at least one CAZyme with a signal peptide
+cgcs_signalp_per_mag <- cazyme_data %>%
+  filter(Prediction != "OTHER") %>%
+  group_by(mag) %>%
+  summarise(n_CGCs_signalp = n_distinct(`CGC#`))
+
+# Summarize CAZymes per cazy_type with signal peptide (Prediction != "OTHER")
+cazymes_signalp <- cazyme_data %>%
+  filter(Prediction != "OTHER") %>%
+  group_by(mag, cazy_type) %>%
+  summarise(n_cazymes_signalp = n(), .groups = "drop") %>%
+  pivot_wider(names_from = cazy_type, values_from = n_cazymes_signalp, names_prefix = "n_signalp_", values_fill = 0)
+
+# Compile MAG level summaries
+mag_cazy_summary <- cgcs_per_mag %>%
+  left_join(cazymes_per_type, by = "mag") %>%
+  left_join(cazymes_signalp, by = "mag") %>%
+  left_join(cgcs_signalp_per_mag, by = "mag") %>%
+  left_join(
+    full_report %>%
+      select(user_genome, domain, phylum, class, order, family, genus, species, Completeness, Contamination, Contig_N50, Genome_Size, Total_Contigs, Max_Contig_Length),
+    by = c("mag" = "user_genome")
+  ) %>%
+  mutate(
+    n_CGCs_signalp = replace_na(n_CGCs_signalp, 0),
+    across(starts_with("n_signalp_"), ~replace_na(., 0))
+  )
+```
+
+Let's download the bac120 tree and metadata from GTDB release 226 to use as a baseline for plotting the cazyme information:
+
+```{bash, eval = FALSE}
+curl -o analyses/bacteroides_pul/mag_pul_summary/bac120_r226.tree https://data.ace.uq.edu.au/public/gtdb/data/releases/release226/226.0/bac120_r226.tree
+curl -o analyses/bacteroides_pul/mag_pul_summary/bac120_taxonomy_r226.tsv https://data.ace.uq.edu.au/public/gtdb/data/releases/release226/226.0/bac120_taxonomy_r226.tsv
+curl -o analyses/bacteroides_pul/mag_pul_summary/bac120_metadata_r226.tsv.gz https://data.ace.uq.edu.au/public/gtdb/data/releases/latest/bac120_metadata.tsv.gz
+```
+
+We will do the summaries at the family level, so we need to subset the GTDB tree to the families included in our MAGs:
+
+```{r}
+library(ape)
+library(treeio)
+
+# Load the tree and taxonomy
+bac120_tree <- read.tree("analyses/bacteroides_pul/mag_pul_summary/bac120_r226.tree")
+bac120_taxonomy <- read_delim("analyses/bacteroides_pul/mag_pul_summary/bac120_taxonomy_r226.tsv", col_names = FALSE, delim = "\t") %>%
+  rename(genome = X1, taxonomy = X2) %>%
+  separate(taxonomy,
+           into = c("domain", "phylum", "class", "order", "family", "genus", "species"),
+           sep = ";",
+           fill = "right",
+           remove = FALSE) %>%
+  mutate(across(c(domain, phylum, class, order, family, genus, species),
+                ~ sub("^[a-z]__", "", .))) %>%
+  mutate(family = case_when(
+                            str_detect(genus, "revotella") ~ "Prevotellaceae",
+                            TRUE ~ family
+  ))
+
+# Get list of target families
+families <- full_report %>% 
+  filter(Contamination <= 10 & Completeness >= 90 & Contig_N50 >= 50000 & family != "UBA932") %>% 
+  pull(family) %>%
+  unique
+
+# Key between target genome labels and taxonomy
+family_genomes_key <- bac120_taxonomy %>%
+  filter(family %in% families & genome %in% bac120_tree$tip.label) %>%
+  group_by(family) %>%
+  slice_sample(n = 1) %>%
+  ungroup()
+
+# Target genome labels for filtering
+family_genomes <-family_genomes_key %>%
+  pull(genome)
+
+# Subset tree to genomes from target family
+family_tree <- keep.tip(bac120_tree, family_genomes)
+```
+
+Let's now integrate the tree data with the family genome key and create the base tree plot:
+
+```{r}
+library(ggtree)
+
+# Tree plot with tip labels as family names
+family_tree_plot <- ggtree(family_tree) %<+% family_genomes_key +
+  geom_tiplab(aes(label = family), size = 3, align = TRUE)
+
+# Add label key to cazy data for plotting
+plot_data <-  mag_cazy_summary %>%
+  left_join(family_genomes_key %>% select(family, genome), by = "family")
+```
+
+I made a function to plot the distributions of cazymes and CGCs to align to the family tree:
+
+```{r}
+# Function to make th percentile plot
+make_percentile_plot <- function(summary_data, variable, tip_order, phylum_col = "phylum", genome_col = "genome", dot_color = "black", line_color = "gray50") {
+  var_sym <- rlang::ensym(variable)
+  phylum_sym <- rlang::ensym(phylum_col)
+  genome_sym <- rlang::ensym(genome_col)
+  
+  # Filter and order data by tree tip order
+  plot_df <- summary_data %>%
+    filter(.data[[rlang::as_string(genome_sym)]] %in% tip_order) %>%
+    mutate(y_plot = factor(.data[[rlang::as_string(genome_sym)]], levels = tip_order)) %>%
+    group_by(y_plot, !!phylum_sym) %>%
+    summarise(
+      median = median(!!var_sym, na.rm = TRUE),
+      p2.5 = quantile(!!var_sym, 0.025, na.rm = TRUE),
+      p97.5 = quantile(!!var_sym, 0.975, na.rm = TRUE),
+      .groups = "drop"
+    )
+  
+  # Calculate phylum boundaries based on tip order
+  phylum_bounds <- plot_df %>%
+    group_by(!!phylum_sym) %>%
+    summarise(
+      top = min(as.numeric(y_plot)),
+      bottom = max(as.numeric(y_plot)),
+      label_genome = y_plot[which.min(as.numeric(y_plot))],
+      .groups = "drop"
+    )
+  
+  # Plot
+  p <- ggplot(plot_df, aes(y = y_plot)) +
+    geom_linerange(aes(xmin = p2.5, xmax = p97.5), size = 1, color = line_color) +
+    geom_point(aes(x = median), size = 2, color = dot_color) +
+    labs(x = rlang::as_label(var_sym), y = NULL) +
+    theme_minimal(base_size = 10) +
+    theme(
+      axis.text.y = element_blank(), 
+      axis.title.y = element_blank(),
+      axis.text.x = element_text(color = "black"),
+      panel.border = element_rect(color = "black", fill = NA, linewidth = 0.75)
+    )
+  
+  # Add horizontal lines between phyla (except after last)
+  if (nrow(phylum_bounds) > 1) {
+    for (i in seq_len(nrow(phylum_bounds) - 1)) {
+      p <- p + geom_hline(yintercept = phylum_bounds$bottom[i] + 0.5, linetype = "dotted", color = "gray40")
+    }
+  }
+  
+  # Add phylum labels aligned with the top taxon in each phylum
+  p <- p + geom_text(
+    data = phylum_bounds,
+    aes(x = -Inf, y = top, label = !!phylum_sym),
+    hjust = -0.1, vjust = 0.5, size = 3, fontface = "bold", inherit.aes = FALSE
+  )
+  
+  return(p)
+}
+```
+
+Now, let's generate the plots for GHs, PLs, CGCs, with and without signal peptides:
+
+```{r}
+library(aplot)
+
+# Get tip labels ordered by their y coordinate (as plotted)
+tree_data <- family_tree_plot$data
+tip_order <- tree_data %>%
+  filter(isTip) %>%
+  arrange(y) %>%
+  pull(label)
+
+# Make all iqr plots for all variables
+cgc_iqr <- make_percentile_plot(plot_data, n_CGCs, tip_order)
+gh_iqr <- make_percentile_plot(plot_data, n_GH, tip_order)
+pl_iqr <- make_percentile_plot(plot_data, n_PL, tip_order)
+signalp_cgc_iqr <- make_percentile_plot(plot_data, n_CGCs_signalp, tip_order)
+signalp_gh_iqr <- make_percentile_plot(plot_data, n_signalp_GH, tip_order)
+signalp_pl_iqr <- make_percentile_plot(plot_data, n_signalp_PL, tip_order)
+
+# Align iqr plots to the left of the tree
+cgc_iqr_plot <- cgc_iqr %>% insert_left(family_tree_plot, width = 0.75)
+gh_iqr_plot <- gh_iqr %>% insert_left(family_tree_plot, width = 0.75)
+pl_iqr_plot <- pl_iqr %>% insert_left(family_tree_plot, width = 0.75)
+signalp_cgc_iqr_plot <- signalp_cgc_iqr %>% insert_left(family_tree_plot, width = 0.75)
+signalp_gh_iqr_plot <- signalp_gh_iqr %>% insert_left(family_tree_plot, width = 0.75)
+signalp_pl_iqr_plot <- signalp_pl_iqr %>% insert_left(family_tree_plot, width = 0.75)
+
+# Save plots
+ggsave("document/plots/cgc_iqr.pdf", cgc_iqr_plot, width = 9, height = 9)
+ggsave("document/plots/gh_iqr.pdf", gh_iqr_plot, width = 9, height = 9)
+ggsave("document/plots/pl_iqr.pdf", pl_iqr_plot, width = 9, height = 9)
+ggsave("document/plots/signalp_cgc_iqr.pdf", signalp_cgc_iqr_plot, width = 6, height = 9)
+ggsave("document/plots/signalp_gh_iqr.pdf", signalp_gh_iqr_plot, width = 9, height = 9)
+ggsave("document/plots/signalp_pl_iqr.pdf", signalp_pl_iqr_plot, width = 9, height = 9)
+```
+
+### Dynamics of Bacteroidota families following antibiotic exposure
+
+Based on the previous comparison, the families in the phylum Bacteroidota are clearly the ones with the highest content of CGCs with potential for extracellular polysaccharide degradation. That includes some families that seem common, such as Tannerellaceae and Rikenellaceae. Now, I want to test whether there is differential prevalence of taxa in this phylum after the antibiotic prophylaxis to determine what lineages beyond Bacteroides with high CGC content could also engage in cooperative polysaccharide breakdown in our patients. For that, I performed a linear mixed regression of detection (>0.1% relative abundance) of each family after at least one day of quinolone prophylaxis and plotted the family-specific coefficients:
+
+```{r}
+library(lme4)
+library(broom.mixed)
+
+# Get family-level relative abundances
+tblrel_family_meta <- prep_taxa_counts("family")
+
+# Define target families and abundance columns
+target_families <- c("Bacteroidaceae", "Barnesiellaceae", "Dysgonomonadaceae", "Marinifilaceae", "Rikenellaceae", "Tannerellaceae", "Prevotellaceae")
+abund_cols <- paste0(target_families, "_abund")
+
+# For each patient, determine first day of quinolone exposure
+quin_start <- tblpatientday_clinical %>%
+  filter(quinolones == 1 & DayRelativeToNearestHCT <= 30) %>%
+  group_by(PatientID) %>%
+  summarise(first_quin_day = min(DayRelativeToNearestHCT, na.rm = TRUE))
+
+# Subset to samples up to day 30 after HCT
+tbl_prevalence <- tblrel_family_meta %>%
+  filter(DayRelativeToNearestHCT <= 30) %>% # Subset to samples up to day 30 after HCT
+  # Merge with clinical table to get quinolone exposure
+  left_join(tblpatientday_clinical %>% select(PatientID, DayRelativeToNearestHCT, quinolones), 
+            by = c("PatientID", "DayRelativeToNearestHCT")) %>% 
+  left_join(quin_start, by = "PatientID") %>%
+  # Annotate each sample as pre- or post-prophylaxis
+  mutate(
+    prophylaxis_status = case_when(
+      is.na(first_quin_day) ~ "pre", # never received quinolones
+      DayRelativeToNearestHCT < first_quin_day ~ "pre",
+      DayRelativeToNearestHCT >= (first_quin_day + 1) ~ "post",
+      TRUE ~ NA_character_
+    )
+  ) %>%
+  filter(!is.na(prophylaxis_status) & prophylaxis_status %in% c("pre", "post"))
+
+# Set reference level for prophylaxis_status to "pre"
+tbl_prevalence$prophylaxis_status <- factor(tbl_prevalence$prophylaxis_status, levels = c("pre", "post"))
+
+# For each family, create a binary prevalence column (1 if abundance >= 0.001, else 0)
+for (fam in target_families) {
+  col <- paste0(fam, "_abund")
+  prev_col <- paste0(fam, "_prev")
+  tbl_prevalence[[prev_col]] <- as.integer(tbl_prevalence[[col]] >= 0.001)
+}
+
+# Store the models (not summaries)
+prevalence_results <- list()
+
+for (fam in target_families) {
+  prev_col <- paste0(fam, "_prev")
+  dat <- tbl_prevalence %>%
+    filter(!is.na(.data[[prev_col]]), !is.na(prophylaxis_status))
+  
+  # Fit model and store the MODEL OBJECT (not summary)
+  model <- glmer(
+    formula = as.formula(paste(prev_col, "~ prophylaxis_status + (1|PatientID)")),
+    data = dat,
+    family = binomial
+  )
+  
+  prevalence_results[[fam]] <- model  # Store model, not summary(model)
+}
+
+# Now extract effects with broom.mixed
+prevalence_effects <- bind_rows(
+  lapply(names(prevalence_results), function(fam) {
+    mod <- prevalence_results[[fam]]
+    tidy_mod <- broom.mixed::tidy(mod, effects = "fixed", conf.int = TRUE)
+    tidy_mod %>%
+      filter(term == "prophylaxis_statuspost") %>%
+      mutate(family = fam)
+  })
+)
+
+# Plot (log odds ratio)
+bacteroidota_detection <- ggplot(prevalence_effects, aes(x = factor(family, levels = c("Prevotellaceae", "Bacteroidaceae", "Tannerellaceae", "Rikenellaceae", "Barnesiellaceae", "Marinifilaceae", "Dysgonomonadaceae")), y = estimate, ymin = conf.low, ymax = conf.high)) +
+  geom_pointrange(size = 0.3) +
+  geom_hline(yintercept = 0, linetype = "dashed", color = "gray50") +
+  labs(
+    x = "Family",
+    y = "Effect of prophylaxis on detection (>0.1%)"
+  ) +
+  custom_theme+
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+
+# Save the plot
+ggsave("document/plots/bacteroidota_prophylaxis_effect.pdf", width = 3.5, height = 5)
+```
+
+Let's also plot the distribution of median relative abundances per patient after quinolone prophylaxis for each family: 
+
+```{r}  
+# Calculate median abundance per patient for each family
+patient_medians <- post_tbl %>%
+  filter(prophylaxis_status == "post") %>%
+  select(PatientID, all_of(paste0(target_families, "_abund"))) %>%
+  pivot_longer(
+    cols = ends_with("_abund"),
+    names_to = "family",
+    values_to = "abundance"
+  ) %>%
+  mutate(family = str_remove(family, "_abund$")) %>%
+  group_by(PatientID, family) %>%
+  summarise(median_abundance = median(abundance, na.rm = TRUE), .groups = "drop")
+
+# Plot distributions
+bacteroidota_fam_abund <- ggplot(patient_medians, 
+  aes(x = factor(family,levels = c("Bacteroidaceae", "Tannerellaceae", "Prevotellaceae", "Rikenellaceae", "Barnesiellaceae", "Marinifilaceae", "Dysgonomonadaceae")),
+    y = log10(median_abundance + 1e-5))) +
+  geom_boxplot(outlier.shape = NA, alpha = 0.7, fill = "gray75") +
+  geom_jitter(width = 0.2, alpha = 0.2, color = "gray20") +
+  labs(
+  x = "Family",
+  y = "log10(median relative abundance per patient)"
+  ) +
+  custom_theme +
+  theme(legend.position = "none",
+        axis.text.x = element_text(angle = 45, hjust = 1))
+
+# Save plot
+ggsave("document/plots/bacteroidota_fam_abund.pdf", bacteroidota_fam_abund, width = 9, height = 5)
+```
+
+And run a Friedman test and paired Wilcoxon signed-rank test between all pairs of families to compare:
+
+```{r}
+# Pivot to wide format for the Friedman test (one row per patient, one column per family)
+patient_medians_wide <- patient_medians %>%
+  pivot_wider(names_from = family, values_from = median_abundance)
+
+# Friedman test
+friedman_data <- patient_medians_wide %>%
+  select(-PatientID)
+friedman_matrix <- as.matrix(friedman_data)
+friedman_result <- friedman.test(friedman_matrix)
+
+# Paired Wilcoxon signed-rank tests for all family pairs
+family_names <- colnames(friedman_matrix)
+wilcox_results <- combn(family_names, 2, simplify = FALSE, FUN = function(pair) {
+  test <- wilcox.test(
+    friedman_matrix[, pair[1]],
+    friedman_matrix[, pair[2]],
+    paired = TRUE,
+    exact = FALSE
+  )
+  tibble(
+    family1 = pair[1],
+    family2 = pair[2],
+    p.value = test$p.value,
+    statistic = test$statistic
+  )
+}) %>% bind_rows()
+
+# Adjust p-values for multiple testing (FDR)
+wilcox_results <- wilcox_results %>%
+  mutate(p.adj = p.adjust(p.value, method = "fdr"))
+
+# Print results
+print(friedman_result)
+print(wilcox_results)
+```
+
+Now let's make a bar plot showing the number of patients in which each family has relative abundance >= 0.1 in at least one sample post prophylaxis:
+
+```{r}
+# For each patient and family, check if any sample has abundance >= 0.1
+patient_family_present <- tbl_prevalence %>%
+  filter(prophylaxis_status == "post") %>%
+  select(PatientID, all_of(paste0(target_families, "_abund"))) %>%
+  pivot_longer(
+    cols = ends_with("_abund"),
+    names_to = "family",
+    values_to = "abundance"
+  ) %>%
+  mutate(family = str_remove(family, "_abund$")) %>%
+  group_by(PatientID, family) %>%
+  summarise(present = any(abundance >= 0.1, na.rm = TRUE), .groups = "drop")
+
+# Count number of patients per family (including 0 for families with no patients meeting condition)
+family_patient_counts <- patient_family_present %>%
+  filter(present) %>%
+  group_by(family) %>%
+  summarise(n_patients = n_distinct(PatientID)) %>%
+  ungroup() %>%
+  # Ensure all target families are included, filling with 0 if missing
+  right_join(tibble(family = target_families), by = "family") %>%
+  mutate(n_patients = replace_na(n_patients, 0))
+
+# Bar plot
+bacteroidota_fam_0.1 <- ggplot(family_patient_counts, 
+  aes(x = factor(family, levels = c("Bacteroidaceae", "Tannerellaceae", "Prevotellaceae", "Rikenellaceae", "Barnesiellaceae", "Marinifilaceae", "Dysgonomonadaceae")), 
+      y = n_patients)) +
+  geom_col(alpha = 0.7, fill = "gray75", color = "black") +
+  geom_text(aes(label = n_patients), vjust = -0.5, size = 3) +
+  labs(
+    x = "Family",
+    y = "Patients with ≥ 10% rel. abundance post-prophylaxis"
+  ) +
+  custom_theme +
+  theme(legend.position = "none",
+        axis.text.x = element_text(angle = 45, hjust = 1))
+
+# Save the plot
+ggsave("document/plots/bacteroidota_fam_0.1.pdf", bacteroidota_fam_0.1, width = 4, height = 5)
+```
+
+### Dissecting CGC content variation within the family Bacteroidaceae
+
+Let's start by subsetting the GTDB tree to the Bacteroidaceae taxa in our dataset:
+
+```{r}
+# Get list of target species
+bacteroidaceae_spp <- full_report %>% 
+  filter(Contamination <= 10 & Completeness >= 90 & Contig_N50 >= 50000 & family == "Bacteroidaceae" & species != "") %>% 
+  pull(species) %>%
+  unique
+
+# Key between target genome labels and taxonomy
+bacteroidaceae_genomes_key <- bac120_taxonomy %>%
+  #filter(order == "Bacteroidales" & genome %in% bac120_tree$tip.label) %>%
+  filter(species %in% bacteroidaceae_spp & genome %in% bac120_tree$tip.label) %>%
+  group_by(species) %>%
+  slice_sample(n = 1) %>%
+  ungroup()
+
+# Target genome labels for filtering
+bacteroidaceae_genomes <-bacteroidaceae_genomes_key %>%
+  pull(genome)
+
+# Subset tree to genomes from target family
+bacteroidaceae_tree <- keep.tip(bac120_tree, bacteroidaceae_genomes)
+```
+
+Now, let's integrate the tree data with the family genome key and create the base tree plot:
+
+```{r}
+# Tree plot with tip labels as family names
+bacteroidaceae_tree_plot <- ggtree(bacteroidaceae_tree) %<+% bacteroidaceae_genomes_key +
+  geom_tiplab(aes(label = species), size = 3, align = T)
+
+# Add label key to cazy data for plotting
+bacteroidaceae_plot_data <-  mag_cazy_summary %>%
+  left_join(bacteroidaceae_genomes_key %>% select(species, genome), by = "species")
+```
+
+And now we can plot the distribution of CGCs across species of the Bacteroidaceae:
+
+```{r}
+# Get tip labels ordered by their y coordinate (as plotted)
+bacteroidaceae_tip_order <- bacteroidaceae_tree_plot$data %>%
+  filter(isTip) %>%
+  arrange(y) %>%
+  pull(label)
+
+# Make all iqr plots for all variables
+bacteroidaceae_cgc_iqr <- make_percentile_plot(bacteroidaceae_plot_data, n_CGCs, bacteroidaceae_tip_order)
+bacteroidaceae_gh_iqr <- make_percentile_plot(bacteroidaceae_plot_data, n_GH, bacteroidaceae_tip_order)
+bacteroidaceae_pl_iqr <- make_percentile_plot(bacteroidaceae_plot_data, n_PL, bacteroidaceae_tip_order)
+bacteroidaceae_signalp_cgc_iqr <- make_percentile_plot(bacteroidaceae_plot_data, n_CGCs_signalp, bacteroidaceae_tip_order)
+bacteroidaceae_signalp_gh_iqr <- make_percentile_plot(bacteroidaceae_plot_data, n_signalp_GH, bacteroidaceae_tip_order)
+bacteroidaceae_signalp_pl_iqr <- make_percentile_plot(bacteroidaceae_plot_data, n_signalp_PL, bacteroidaceae_tip_order)
+
+# Align iqr plots to the left of the tree
+bacteroidaceae_cgc_iqr_plot <- bacteroidaceae_cgc_iqr %>% insert_left(bacteroidaceae_tree_plot, width = 0.75)
+bacteroidaceae_gh_iqr_plot <- bacteroidaceae_gh_iqr %>% insert_left(bacteroidaceae_tree_plot, width = 0.75)
+bacteroidaceae_pl_iqr_plot <- bacteroidaceae_pl_iqr %>% insert_left(bacteroidaceae_tree_plot, width = 0.75)
+bacteroidaceae_signalp_cgc_iqr_plot <- bacteroidaceae_signalp_cgc_iqr %>% insert_left(bacteroidaceae_tree_plot, width = 0.75)
+bacteroidaceae_signalp_gh_iqr_plot <- bacteroidaceae_signalp_gh_iqr %>% insert_left(bacteroidaceae_tree_plot, width = 0.75)
+bacteroidaceae_signalp_pl_iqr_plot <- bacteroidaceae_signalp_pl_iqr %>% insert_left(bacteroidaceae_tree_plot, width = 0.75)
+```
+
+These plots dissect the variation in content across the family but they show that *B. fragilis* is one of the speces with the lowest CGC content. Perhaps looking at the predicted PUL substrates or the presence of SusC/SusD homologs would reveal more differences.
+
+### PUL substrate diversity among Bacteroidaceae species
+
+Because we are now looking within Bacteroidaceae, we will add an additional filter to the CGCs to infer their potential for cooperative polysaccharide degradation: the presence of susC/susD homologs within the CGCs.
+
+For *susD*, we will use the profile HMMs of four PFAMs (PF07980, PF12741, PF12771, PF14322) that encompass SusD-like proteins to run searches on the non-cazyme proteins in the CGCs. Let's download the profile HMMs from Interpro: 
+
+```{bash, eval=FALSE}
+# Download PFAM HMM profiles and decompress
+mkdir -p hmms/susD
+curl -o hmms/susD/PF07980.hmm.gz https://www.ebi.ac.uk/interpro/wwwapi//entry/pfam/PF07980?annotation=hmm
+curl -o hmms/susD/PF12741.hmm.gz https://www.ebi.ac.uk/interpro/wwwapi//entry/pfam/PF12741?annotation=hmm
+curl -o hmms/susD/PF12771.hmm.gz https://www.ebi.ac.uk/interpro/wwwapi//entry/pfam/PF12771?annotation=hmm
+curl -o hmms/susD/PF14322.hmm.gz https://www.ebi.ac.uk/interpro/wwwapi//entry/pfam/PF14322?annotation=hmm
+gunzip hmms/susD/*
+```
+
+After exploring the prediciton of the susD-like genes, I realized that some clusters don't include the susD either because it's not a part of it or potentially because the contigs break right around them (e.g., in B. fragilis MAGs), whereas the susC are found much more frequently, so I will use them as the PUL indicator to filter the susbtrates in Bacteroidacee.
+
+To detect *susC*, we will use the TCDB classification given by run_dbcan, which detects TonB-dependent outer membrane porins (1.B.14). So let's start by finding the CGCs of Bacteroidaceae that have a susC-like transporter:
+
+```{r}
+# Get Bacteroidaceae MAGs
+bacteroidaceae_mags <- full_report %>% 
+  filter(Contamination <= 10 & Completeness >= 90 & Contig_N50 >= 50000 & family == "Bacteroidaceae" & species != "") %>% 
+  pull(user_genome) %>%
+  unique
+
+# Filter by CGCs by susC presence
+susc_data <- compiled_cgc %>%
+  filter(mag %in% bacteroidaceae_mags & str_detect(`Gene Annotation`, "1.B.14")) %>%
+  select(mag, `CGC#`) %>%
+  distinct(mag,`CGC#`) %>%
+  add_column(susc = TRUE)
+```
+
+Now, we need to compile the PUL substrate predictions from dbCAN:
+
+```{bash, eval=FALSE}
+# Compiled output
+PUL_OUT="analyses/bacteroides_pul/mag_pul_summary/compiled_puls.tsv"
+
+# Get header from first file that exists
+FIRST_MAG=$(head -n 1 ${NC_MAGS})
+FIRST_FILE="analyses/bacteroides_pul/mag_pul_prediction/isabl1/${FIRST_MAG}/substrate_prediction.tsv"
+
+# Write header with added 'mag' column (using sed to get exactly line 2)
+echo -e "mag\t$(sed -n '1p' ${FIRST_FILE})" > ${PUL_OUT}
+
+# Process each MAG
+while IFS= read -r MAG; do
+    TSV_FILE="analyses/bacteroides_pul/mag_pul_prediction/isabl1/${MAG}/substrate_prediction.tsv"
+    
+    if [ -f "${TSV_FILE}" ]; then
+        # Add MAG column and append data (skip header)
+        tail -n +2 ${TSV_FILE} | awk -v mag="${MAG}" 'BEGIN{OFS="\t"} {print mag, $0}' >> ${PUL_OUT}
+        echo "Processed: ${MAG}"
+    else
+        echo "Warning: File not found for ${MAG}"
+    fi
+done < ${NC_MAGS}
+```
+
+Next, I will integrate the PUL and CGC data so I can filter to digestive PULs with substrate predictions and susC:
+
+```{r}
+# Load compiled PUL data, merge substrate predictions and filter to susC-containing CGCs
+compiled_puls <- read_delim("analyses/bacteroides_pul/mag_pul_summary/compiled_puls.tsv") %>%
+  mutate(`CGC#` = str_remove(`#cgcid`, ".*\\|"),
+          substrate = case_when(
+                              is.na(`dbCAN-PUL substrate`) & !is.na(`dbCAN-sub substrate`) ~ `dbCAN-sub substrate`,
+                              TRUE ~ `dbCAN-PUL substrate`
+          )) %>%
+  filter(!str_detect(substrate, ",")) %>%
+  select(mag, `CGC#`, substrate) %>%
+  left_join(susc_data, by = c("mag", "CGC#")) %>%
+  filter(susc == TRUE)
+
+# Integrate substrate data with CGC count
+pul_data <- cazyme_data %>%
+  filter(Prediction != "OTHER" & family == "Bacteroidaceae" & species != "") %>%
+  left_join(compiled_puls, by = c("mag", "CGC#")) %>%
+  filter(!str_detect(substrate, "X|synthesis")) %>%
+  left_join(bacteroidaceae_genomes_key %>% select(species, genome), by = "species") %>%
+  distinct(mag, `CGC#`, .keep_all = T) %>%
+  mutate(substrate = str_replace(substrate, "hostglycan", "host glycan")) %>%
+  group_by(mag, genome, species, substrate) %>%
+  summarise(n_cgcs = n_distinct(`CGC#`), .groups = "drop") %>%
+  group_by(genome, species, substrate) %>%
+  summarise(median_cgcs = median(n_cgcs, na.rm = TRUE), .groups = "drop")
+```
+
+For the figure, I organized the glycan substrates by primary origin and complexity according to their monomer composition and branching:
+
+```{r}
+# Define glycan order by complexity
+plantcellwall_glycans <- c(
+  "pectin",
+  "arabinoxylan",
+  "xyloglucan",
+  "arabinogalactan",
+  "galactomannan",
+  "glucomannan",
+  "alpha-mannan",
+  "beta-mannan",
+  "xylan",
+  "arabinan",
+  "galactan",
+  "alpha-galactan",
+  "beta-galactan"
+)
+plantstorage_glycans <- c(
+  "starch",
+  "beta-glucan",
+  "alpha-glucan",
+  "fructan"
+)
+marinealgae_glycans <- c(
+  "carrageenan",
+  "alginate",
+  "agarose")
+hostanimal_glycans <- c(
+  "host glycan",
+  "mucin",
+  "glycosaminoglycan",
+  "human milk oligosaccharide"
+)
+microbial_glycans <- c(
+  "capsule polysaccharide degradation",
+  "chitin"
+)
+glycan_order <- c(
+  plantcellwall_glycans,
+  plantstorage_glycans,
+  marinealgae_glycans,
+  hostanimal_glycans,
+  microbial_glycans)
+```
+
+Finally, I plotted a bubblemap showing the median number of CGCs per MAG that target each glycan substrate across the Bacteroidaceae species in our dataset, including a barplot showing the total number of substrates each species can degrade:
+
+```{r}
+# Order substrates
+pul_data <- filter(pul_data, substrate %in% glycan_order)
+pul_data$substrate <- factor(pul_data$substrate, levels = glycan_order)
+
+# Create a data frame mapping substrates to their origin
+substrate_origin <- data.frame(
+  substrate = c(plantcellwall_glycans, plantstorage_glycans, marinealgae_glycans, 
+                hostanimal_glycans, microbial_glycans),
+  origin = c(rep("Plant cell wall", length(plantcellwall_glycans)),
+             rep("Plant storage", length(plantstorage_glycans)),
+             rep("Marine algae", length(marinealgae_glycans)),
+             rep("Host/animal", length(hostanimal_glycans)),
+             rep("Microbial", length(microbial_glycans)))
+)
+
+# Define colors for each origin
+origin_colors <- c(
+  "Plant cell wall" = "#99ce91",
+  "Plant storage" = "#ba8e67",
+  "Marine algae" = "#88edc4",
+  "Host/animal" = "#f5c4c4",
+  "Microbial" = "#c9b8e0"
+)
+
+# Ensure substrate is a factor with the same levels as in pul_data
+substrate_origin$substrate <- factor(substrate_origin$substrate, levels = glycan_order)
+
+# Create the main bubblemap without x-axis labels
+substrate_bubblemap <- ggplot(pul_data, 
+  aes(x = substrate, y = genome, size = median_cgcs, color = median_cgcs)) +
+  geom_point(alpha = 0.8) +
+  scale_size_continuous(name = "Median CGCs") +
+  scale_color_viridis_c(name = "Median CGCs", direction = -1) +
+  theme_minimal(base_size = 10) +
+  theme(
+    axis.text.x = element_blank(),
+    axis.text.y = element_blank(),
+    axis.title.y = element_blank(),
+    axis.title.x = element_blank()
+  )
+
+# Create origin tile plot WITH x-axis labels at 45 degrees and vertical legend
+origin_tile_plot <- ggplot(substrate_origin, 
+  aes(x = substrate, y = 1, fill = origin)) +
+  geom_tile(height = 0.1) +
+  scale_fill_manual(values = origin_colors, name = "Glycan origin") +
+  scale_x_discrete(position = "bottom") +
+  scale_y_continuous(expand = c(0, 0)) +
+  theme_minimal(base_size = 10) +
+  theme(
+    axis.text.y = element_blank(),
+    axis.ticks.y = element_blank(),
+    axis.title.y = element_blank(),
+    panel.grid = element_blank(),
+    axis.text.x = element_text(angle = 45, hjust = 1),
+    legend.position = "right"
+  ) +
+  labs(x = "Glycan substrate")
+
+# Summarize number of substrates
+substrate_count_data <- pul_data %>%
+  group_by(genome, species) %>%
+  summarise(n_substrates = n_distinct(substrate), .groups = "drop")
+
+# Create a bar plot of total unique substrates per genome
+substrate_count_plot <- ggplot(substrate_count_data, 
+  aes(x = n_substrates, y = genome)) +
+  geom_col(fill = "gray60", alpha = 0.7) +
+  scale_y_discrete(limits = bacteroidaceae_tip_order) +
+  scale_x_continuous(breaks = c(0, 10, 20)) +
+  theme_minimal(base_size = 10) +
+  theme(
+    axis.text.y = element_blank(),
+    axis.title.y = element_blank(),
+    panel.grid.major.y = element_blank(),
+    panel.grid.major.x = element_blank(),
+    panel.grid.minor.x = element_blank()
+  ) +
+  labs(x = "Substrates")
+
+
+# Align all plots: tree on left, bubblemap in middle, substrate count on right, origin tiles below
+combined_plot <- substrate_bubblemap %>% 
+  insert_left(bacteroidaceae_tree_plot, width = 0.2) %>%
+  insert_right(substrate_count_plot, width = 0.15) %>%
+  insert_bottom(origin_tile_plot, height = 0.02)
+
+# Save the plot
+ggsave(filename = "document/plots/bacteroidaceae_substrate_bubblemap.pdf",
+  plot = combined_plot,
+  height = 5, width = 8)
+```
+
+## Predicting Pseudomonadota BSI with Bacteroides features
+
+### Bacteroidaceae ASV dynamics following antibiotic prophylaxys
+
+Given the results of the previous analyses, the first thing we need to do is establish how frequent different species of *Bacteroides* are post-prophylaxys. 
+
+We used the 16S-based relative abundance of *Bacteroides* as a point of comparison for the predictive power of the PUL features. Thus, I first needed to compile those data. I prepared a version of the dataset where I merged the relative abundances of ASVs in three groups:
+
+  - *Bacteroides s. lat*: all ASVs classified as *Bacteroides* in the original dataset, which includes both *Bacteroides* and *Phocaeicola* species.
+  - *Bacteroides s. str.*: All ASVs classified as *Bacteroides* after removing the ones that matched full 16S sequences of *Phocaeicola*.
+  - *Phocaeicola*: All ASVs that matched full 16S sequences of *Phocaeicola*, plus ASV_6242, which was the only one originally classified as *Phocaeicola*.
+
+```{r}
+# Load the species summary
+load("analyses/processed_data/asv_species_summary.RData")
+
+# Define the ASVs in each group_by
+bacteroides_slat_asvs <- asv_species_summary %>%
+  pull(asv)
+bacteroides_sstr_asvs <- asv_species_summary %>%
+  filter(!str_detect(species, "Phocaeicola") & mismatches <= 1) %>%
+  pull(asv)
+phocaeicola_asvs <- c(
+  asv_species_summary %>%
+    filter(str_detect(species, "Phocaeicola") & mismatches <= 1) %>%
+    pull(asv), 
+  "ASV_6242")
+
+# Get the 16S features and group the ASVs
+tblrel_asv_meta <- prep_taxa_counts("asv") %>%
+  mutate(
+    Bacteroides_s_lat = {
+      cols <- intersect(paste0(bacteroides_slat_asvs, "_abund"), names(.))
+      if (length(cols) > 0) rowSums(select(., all_of(cols)), na.rm = TRUE) else 0
+    },
+    Bacteroides_s_str = {
+      cols <- intersect(paste0(bacteroides_sstr_asvs, "_abund"), names(.))
+      if (length(cols) > 0) rowSums(select(., all_of(cols)), na.rm = TRUE) else 0
+    },
+    Phocaeicola = {
+      cols <- intersect(paste0(phocaeicola_asvs, "_abund"), names(.))
+      if (length(cols) > 0) rowSums(select(., all_of(cols)), na.rm = TRUE) else 0
+    }
+  ) %>%
+  filter(DayRelativeToNearestHCT <= 30)
+```
+
+Now, let's look at the abundance and detection distribution of Bacteroidaceae ASVs before and after the quinolone prophylaxis:
+
+```{r}
+# Gather ASV abundances into long format
+asv_abund_cols <- paste0(bacteroides_slat_asvs, "_abund")
+asv_long <- tblrel_asv_meta %>%
+  select(PatientID, DayRelativeToNearestHCT, all_of(asv_abund_cols)) %>%
+  pivot_longer(
+    cols = all_of(asv_abund_cols),
+    names_to = "asv",
+    values_to = "abund"
+  ) %>%
+  mutate(asv = sub("_abund$", "", asv))
+
+# Join with quinolone start day
+asv_long <- asv_long %>%
+  left_join(quin_start, by = "PatientID") %>%
+  filter(!is.na(first_quin_day))
+
+# Annotate each sample as pre- or post-prophylaxis
+asv_long <- asv_long %>%
+  mutate(
+    prophylaxis_status = case_when(
+      DayRelativeToNearestHCT < first_quin_day ~ "pre",
+      DayRelativeToNearestHCT > first_quin_day ~ "post",
+      TRUE ~ NA_character_
+    )
+  ) %>%
+  filter(!is.na(prophylaxis_status))
+
+# For each patient, ASV, and status, check if any sample meets detection threshold
+asv_patient_detected <- asv_long %>%
+  group_by(asv, PatientID, prophylaxis_status) %>%
+  summarise(detected = any(abund >= 0.001, na.rm = TRUE), .groups = "drop") %>%
+  filter(detected)
+
+# Count number of patients per ASV and status
+asv_patient_counts <- asv_patient_detected %>%
+  group_by(asv, prophylaxis_status) %>%
+  summarise(n_patients = n_distinct(PatientID), .groups = "drop")
+
+# Ensure all ASVs and both statuses are included (fill missing with 0)
+asv_patient_counts <- expand_grid(
+    asv = bacteroides_slat_asvs,
+    prophylaxis_status = c("pre", "post")
+  ) %>%
+  left_join(asv_patient_counts, by = c("asv", "prophylaxis_status")) %>%
+  mutate(n_patients = replace_na(n_patients, 0))
+
+# Top Bacteroidacae ASVs post-prophylaxis (detected in > 100 patients)
+top_asvs_postquin <- filter(asv_patient_counts, 
+                                prophylaxis_status == "post" & n_patients >= 100) %>%
+                     pull(asv) 
+
+# Barplot: pre and post side by side
+ggplot(asv_patient_counts, aes(x = reorder(asv, -n_patients), y = n_patients, fill = prophylaxis_status)) +
+  geom_col(position = position_dodge(width = 0.8)) +
+  labs(
+    x = "ASV",
+    y = "Patients with detection (≥0.1%)",
+    fill = "Prophylaxis status",
+    title = "Prevalence of Bacteroides s. lat ASVs pre- and post-quinolone"
+  ) +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+```
+
+### Regression models of Pseudomonadota BSI with microbiome and prophylaxis features
+
+Let's start by making a labeled feature table at the patient level. The labeling corresponds whether the patient had a Pseudomonadota BSI during neutropenia. The features include the median relative abundance per patient of different taxa (Paseudomonadota, Enterobacteriaceae + Pseudomonadaceae, Tannerellaceae, Bacteroidaceae, and the top 12 most prevalent Bacteroidaceae ASVs post quinolone prophylaxis). For patients who had a BSI, we used samples from day -30 up to the day before the BSI. For patients who did not get a BSI, we used samples from day -30 up to the day of engrafment. We included a binary feature specifying if the patient had any quinolone prophylaxis and stratified the median calculations by the periods before and after it:
+
+```{r}
+# Load the patientday table
+load("analyses/processed_data/tblpatientday_clinical.RData")
+tblpatientday_clinical$DayRelativeToNearestHCT <- as.numeric(as.character(tblpatientday_clinical$DayRelativeToNearestHCT))
+
+# Colnames of top Bacteroidaceae ASVs
+top_asvs_postquin_cols <- paste0(top_asvs_postquin, "_abund")
+
+# Get table with all microbiome features
+tblrel_phylum <- prep_taxa_counts("phylum") %>%
+  select(Sample, PatientID, DayRelativeToNearestHCT, Proteobacteria_abund)
+tblrel_family <- prep_taxa_counts("family") %>%
+  select(Sample, Enterobacteriaceae_abund, Bacteroidaceae_abund, Pseudomonadaceae_abund, Tannerellaceae_abund)
+tblrel_asv <- prep_taxa_counts("asv") %>%
+  select(Sample, all_of(top_asvs_postquin_cols))
+microb_features <- tblrel_phylum_meta %>%
+  left_join(tblrel_family, by = "Sample") %>%
+  left_join(tblrel_asv, by = "Sample") %>%
+  mutate(Pseudoentero_abund = Enterobacteriaceae_abund + Bacteroidaceae_abund,
+         top_asvs_abund = rowSums(across(all_of(top_asvs_postquin_cols)), na.rm = TRUE))
+
+# Get first infection day per patient DURING NEUTROPENIA ONLY
+first_infection <- tblpatientday_clinical %>%
+  filter(Proteobacteria_infection == 1 & Status == "Neutropenia") %>%
+  group_by(PatientID) %>%
+  summarise(first_infection_day = min(DayRelativeToNearestHCT, na.rm = TRUE))
+
+# Get engraftment day per patient
+engraftment_day <- tblpatientday_clinical %>%
+  filter(Status == "Engraftment") %>%
+  group_by(PatientID) %>%
+  summarise(engraftment_day = min(DayRelativeToNearestHCT, na.rm = TRUE))
+
+# Create a comprehensive patient_features table
+patient_features <- microb_features %>%
+  filter(DayRelativeToNearestHCT >= -30) %>%
+  left_join(quin_start, by = "PatientID") %>%
+  left_join(first_infection, by = "PatientID") %>%
+  left_join(engraftment_day, by = "PatientID") %>%
+  mutate(
+    has_infection = !is.na(first_infection_day),
+    cutoff_day = if_else(has_infection, first_infection_day, engraftment_day),
+    received_quin = !is.na(first_quin_day)
+  ) %>%
+  filter(
+    !is.na(cutoff_day),
+    DayRelativeToNearestHCT < cutoff_day
+  ) %>%
+  # Calculate features separately for pre- and post-prophylaxis periods
+  mutate(
+    post_quin = received_quin & DayRelativeToNearestHCT >= first_quin_day
+  ) %>%
+  group_by(PatientID, has_infection, received_quin) %>%
+  summarise(
+    # Bacteroidaceae
+    median_bacteroidaceae_all = median(Bacteroidaceae_abund, na.rm = TRUE),
+    median_bacteroidaceae_post = median(Bacteroidaceae_abund[post_quin], na.rm = TRUE),
+    median_bacteroidaceae_pre = median(Bacteroidaceae_abund[!post_quin], na.rm = TRUE),
+
+    # Tannerellaceae
+    median_tannerellaceae_all = median(Tannerellaceae_abund, na.rm = TRUE),
+    median_tannerellaceae_post = median(Tannerellaceae_abund[post_quin], na.rm = TRUE),
+    median_tannerellaceae_pre = median(Tannerellaceae_abund[!post_quin], na.rm = TRUE),
+    
+    # Proteobacteria
+    median_proteobacteria_all = median(Proteobacteria_abund, na.rm = TRUE),
+    median_proteobacteria_post = median(Proteobacteria_abund[post_quin], na.rm = TRUE),
+    median_proteobacteria_pre = median(Proteobacteria_abund[!post_quin], na.rm = TRUE),
+    
+    # Pseudoentero (combined)
+    median_pseudoentero_all = median(Pseudoentero_abund, na.rm = TRUE),
+    median_pseudoentero_post = median(Pseudoentero_abund[post_quin], na.rm = TRUE),
+    median_pseudoentero_pre = median(Pseudoentero_abund[!post_quin], na.rm = TRUE),
+    
+    # Top ASVs combined
+    median_top_asvs_all = median(top_asvs_abund, na.rm = TRUE),
+    median_top_asvs_post = median(top_asvs_abund[post_quin], na.rm = TRUE),
+    median_top_asvs_pre = median(top_asvs_abund[!post_quin], na.rm = TRUE),
+    
+    # Individual top ASVs - dynamically calculate for all ASVs in top_asvs_postquin_cols
+    across(
+      all_of(top_asvs_postquin_cols),
+      list(
+        all = ~median(., na.rm = TRUE),
+        post = ~median(.[post_quin], na.rm = TRUE),
+        pre = ~median(.[!post_quin], na.rm = TRUE)
+      ),
+      .names = "median_{.col}_{.fn}"
+    ),
+    
+    # Sample counts
+    n_samples_all = n(),
+    n_samples_post = sum(post_quin, na.rm = TRUE),
+    n_samples_pre = sum(!post_quin, na.rm = TRUE),
+    
+    .groups = "drop"
+  ) %>%
+  # Replace NaN and Inf with NA
+  mutate(
+    across(starts_with("median_"), ~if_else(is.nan(.) | is.infinite(.), NA_real_, .))
+  ) %>%
+  # Create detection variables (>= 1% relative abundance)
+  mutate(
+    # Bacteroidaceae
+    bacteroidaceae_detected_all = !is.na(median_bacteroidaceae_all) & median_bacteroidaceae_all >= 0.01,
+    bacteroidaceae_detected_post = !is.na(median_bacteroidaceae_post) & median_bacteroidaceae_post >= 0.01,
+    bacteroidaceae_detected_pre = !is.na(median_bacteroidaceae_pre) & median_bacteroidaceae_pre >= 0.01,
+
+    # Tannerellaceae
+    tannerellaceae_detected_all = !is.na(median_tannerellaceae_all) & median_tannerellaceae_all >= 0.01,
+    tannerellaceae_detected_post = !is.na(median_tannerellaceae_post) & median_tannerellaceae_post >= 0.01,
+    tannerellaceae_detected_pre = !is.na(median_tannerellaceae_pre) & median_tannerellaceae_pre >= 0.01,
+    
+    # Proteobacteria
+    proteobacteria_detected_all = !is.na(median_proteobacteria_all) & median_proteobacteria_all >= 0.01,
+    proteobacteria_detected_post = !is.na(median_proteobacteria_post) & median_proteobacteria_post >= 0.01,
+    proteobacteria_detected_pre = !is.na(median_proteobacteria_pre) & median_proteobacteria_pre >= 0.01,
+    
+    # Pseudoentero
+    pseudoentero_detected_all = !is.na(median_pseudoentero_all) & median_pseudoentero_all >= 0.01,
+    pseudoentero_detected_post = !is.na(median_pseudoentero_post) & median_pseudoentero_post >= 0.01,
+    pseudoentero_detected_pre = !is.na(median_pseudoentero_pre) & median_pseudoentero_pre >= 0.01,
+    
+    # Top ASVs combined
+    top_asvs_detected_all = !is.na(median_top_asvs_all) & median_top_asvs_all >= 0.01,
+    top_asvs_detected_post = !is.na(median_top_asvs_post) & median_top_asvs_post >= 0.01,
+    top_asvs_detected_pre = !is.na(median_top_asvs_pre) & median_top_asvs_pre >= 0.01,
+    
+    # Individual ASVs detection - dynamically create for all, post, pre
+    across(
+      starts_with("median_") & ends_with("_abund_all"),
+      ~!is.na(.) & . >= 0.01,
+      .names = "{str_remove(str_remove(.col, '^median_'), '_all$')}_detected_all"
+    ),
+    across(
+      starts_with("median_") & ends_with("_abund_post"),
+      ~!is.na(.) & . >= 0.01,
+      .names = "{str_remove(str_remove(.col, '^median_'), '_post$')}_detected_post"
+    ),
+    across(
+      starts_with("median_") & ends_with("_abund_pre"),
+      ~!is.na(.) & . >= 0.01,
+      .names = "{str_remove(str_remove(.col, '^median_'), '_pre$')}_detected_pre"
+    )
+    ) %>%
+  # Clean up ASV detection column names
+  rename_with(
+    ~str_replace(., "_all_detected$", "_detected_all"),
+    ends_with("_all_detected")
+  ) %>%
+  rename_with(
+    ~str_replace(., "_post_detected$", "_detected_post"),
+    ends_with("_post_detected")
+  ) %>%
+  rename_with(
+    ~str_replace(., "_pre_detected$", "_detected_pre"),
+    ends_with("_pre_detected")
+  )
+```
+
+Next, I made a function to fir six different regression models of BSI with different encodings of the taxa abundance.
+
+  - Model on meadian abundance post prophylaxiss (809 patients): Infected ~ log10(median taxon abundance post prophylaxis)
+  - Model on detection post prophylaxis (809 patients): Infected ~ Median taxon abundance post propylaxis > 0.01
+  - Model on median abundance pre and post prophylaxis (408 patients, only those with both pre and post prophylaxis samples): Infected ~ log10(median taxon abundance pre prophylaxis) + log10(median taxon abundance post prophylaxis)
+  - Model on detection pre and post prophylaxis (408 patients, only those with both pre and post prophylaxis samples): Infected ~ Median taxon abundance post propylaxis > 0.01 + Median taxon abundance pre propylaxis > 0.01
+  - Model on full median abundance with prophylaxis status (1,082 patients): Infected ~ log10(median taxon abundance) + prophylaxis
+  - Model on full detection with prophylaxis status (1,082 patients): Infected ~ Median taxon abundance > 0.01 + prophylaxis
+
+```{r}
+# Function to fit all 6 model types for a given taxon
+fit_taxon_models <- function(taxon_name, data) {
+  
+  # Prepare column names
+  median_all <- paste0("median_", taxon_name, "_all")
+  median_post <- paste0("median_", taxon_name, "_post")
+  median_pre <- paste0("median_", taxon_name, "_pre")
+  detected_all <- paste0(taxon_name, "_detected_all")
+  detected_post <- paste0(taxon_name, "_detected_post")
+  detected_pre <- paste0(taxon_name, "_detected_pre")
+  
+  results <- list()
+  
+  # Model 1: Median abundance post-prophylaxis
+  tryCatch({
+    features_post <- data %>%
+      filter(received_quin, n_samples_post > 0, !is.na(.data[[median_post]]))
+    
+    if (nrow(features_post) > 0) {
+      formula_str <- paste0("has_infection ~ log10(", median_post, " + 0.00001)")
+      model <- glm(as.formula(formula_str), data = features_post, family = binomial)
+      
+      results$median_post <- tidy(model) %>%
+        filter(term != "(Intercept)") %>%
+        mutate(
+          model_type = "median_post",
+          taxon = taxon_name,
+          n_samples = nrow(features_post)
+        )
+    }
+  }, error = function(e) NULL)
+  
+  # Model 2: Detection post-prophylaxis
+  tryCatch({
+    features_post <- data %>%
+      filter(received_quin, n_samples_post > 0, !is.na(.data[[detected_post]]))
+    
+    if (nrow(features_post) > 0) {
+      formula_str <- paste0("has_infection ~ ", detected_post)
+      model <- glm(as.formula(formula_str), data = features_post, family = binomial)
+      
+      results$detection_post <- tidy(model) %>%
+        filter(term != "(Intercept)") %>%
+        mutate(
+          model_type = "detection_post",
+          taxon = taxon_name,
+          n_samples = nrow(features_post)
+        )
+    }
+  }, error = function(e) NULL)
+  
+  # Model 3: Median abundance pre + post
+  tryCatch({
+    features_prepost <- data %>%
+      filter(received_quin, n_samples_pre > 0, n_samples_post > 0,
+             !is.na(.data[[median_pre]]), !is.na(.data[[median_post]]))
+    
+    if (nrow(features_prepost) > 0) {
+      formula_str <- paste0("has_infection ~ log10(", median_pre, " + 0.00001) + log10(", median_post, " + 0.00001)")
+      model <- glm(as.formula(formula_str), data = features_prepost, family = binomial)
+      
+      results$median_prepost <- tidy(model) %>%
+        filter(term != "(Intercept)") %>%
+        mutate(
+          model_type = "median_prepost",
+          taxon = taxon_name,
+          n_samples = nrow(features_prepost)
+        )
+    }
+  }, error = function(e) NULL)
+  
+  # Model 4: Detection pre + post
+  tryCatch({
+    features_prepost <- data %>%
+      filter(received_quin, n_samples_pre > 0, n_samples_post > 0,
+             !is.na(.data[[detected_pre]]), !is.na(.data[[detected_post]]))
+    
+    if (nrow(features_prepost) > 0) {
+      formula_str <- paste0("has_infection ~ ", detected_pre, " + ", detected_post)
+      model <- glm(as.formula(formula_str), data = features_prepost, family = binomial)
+      
+      results$detection_prepost <- tidy(model) %>%
+        filter(term != "(Intercept)") %>%
+        mutate(
+          model_type = "detection_prepost",
+          taxon = taxon_name,
+          n_samples = nrow(features_prepost)
+        )
+    }
+  }, error = function(e) NULL)
+  
+  # Model 5: Median abundance all + quinolone status
+  tryCatch({
+    features_all <- data %>%
+      filter(!is.na(.data[[median_all]]))
+    
+    if (nrow(features_all) > 0) {
+      formula_str <- paste0("has_infection ~ log10(", median_all, " + 0.00001) + received_quin")
+      model <- glm(as.formula(formula_str), data = features_all, family = binomial)
+      
+      results$median_full <- tidy(model) %>%
+        filter(term != "(Intercept)") %>%
+        mutate(
+          model_type = "median_full",
+          taxon = taxon_name,
+          n_samples = nrow(features_all)
+        )
+    }
+  }, error = function(e) NULL)
+  
+  # Model 6: Detection all + quinolone status
+  tryCatch({
+    features_all <- data %>%
+      filter(!is.na(.data[[detected_all]]))
+    
+    if (nrow(features_all) > 0) {
+      formula_str <- paste0("has_infection ~ ", detected_all, " + received_quin")
+      model <- glm(as.formula(formula_str), data = features_all, family = binomial)
+      
+      results$detection_full <- tidy(model) %>%
+        filter(term != "(Intercept)") %>%
+        mutate(
+          model_type = "detection_full",
+          taxon = taxon_name,
+          n_samples = nrow(features_all)
+        )
+    }
+  }, error = function(e) NULL)
+  
+  # Combine all results
+  bind_rows(results)
+}
+```
+
+Then, I used this function to fit these models with different taxa (Paseudomonadota, Enterobacteriaceae + Pseudomonadaceae, Tannerellaceae, Bacteroidaceae, and the top 12 most prevalent Bacteroidaceae ASVs post quinolone prophylaxis):
+
+```{r}
+# Define taxa to model
+taxa_list <- c(
+  "bacteroidaceae",
+  "tannerellaceae",
+  "proteobacteria",
+  "pseudoentero",
+  "top_asvs"
+)
+
+# Also include individual ASVs
+#individual_asvs <- str_remove(top_asvs_postquin_cols, "_abund$")
+all_taxa <- c(taxa_list, top_asvs_postquin_cols)
+
+
+# Fit models for all taxa
+all_model_results <- map_dfr(all_taxa, ~fit_taxon_models(.x, patient_features))
+
+# Reorder columns for clarity
+all_model_results <- all_model_results %>%
+  select(taxon, model_type, term, estimate, p.value, std.error, statistic, n_samples) %>%
+  arrange(taxon, model_type)
+
+# Save results
+write_csv(all_model_results, "document/tables/taxon_regression_results.csv")
+
+# Summary: significant results (p < 0.05)
+significant_results <- all_model_results %>%
+  filter(p.value < 0.05) %>%
+  arrange(p.value)
+
+print(significant_results)
+```
+
+As expected, all the Pseudomonadota predictors were significantly associated with increased BSI risk, but the significant predictors are always the full or post-prophylaxis abundances. ASV 277 seems to have to most consistent signal out of the Bacteroidaceae. The meadin abundance of Tannerellaceae was negatively associated with BSI--could it be because they compete with the Bacteroidaceae and exclude them, thus decreasing the risk of Bacteroidaceae-mediated infections?
+
 ## Quantifying PUL abundance at metagenome scale
 
 I started with the metagenomic assemblies that I generated for the Enterococcus F32 exploration. They are under `analyses/enterococcus_diversity/metagenomes/assembly/metaspades/`, but I will symlink them to a new directory to simplify paths:
@@ -453,909 +1817,7 @@ ggplot(casecontrol_fam_substrate_20day, aes(x = factor(case), y = log10(Bacteroi
   theme_minimal()
 ```
 
-## Carbohydrate degradation potential in gut-microbiome taxa across the tree of life
 
-### PUL predictions across isabl1 MAGs
-
-We'll work with the bins recovered from the isabl1 metagenomes using multi-sample sample binning with VAMB (successfull metaspades assemblies used in enterococcus_diversity_II). Let's symlink the MAG directory:
-
-```{sh}
-ln -s /data1/xavierj/carlos/bsi_prediction/analyses/enterococcus_diversity_II/binning/short/isabl1/vamb/multi_bins /data1/xavierj/carlos/bsi_prediction/analyses/bacteroides_pul/mags
-```
-
-Now, we run CheckM2 on all the bins:
-
-```{sh}
-sbatch code/scripts/bacteroides_pul/checkm2_isabl1.sh
-```
-
-With the CheckM results and the GTDB results I obtained for the Enterococcus projects for these bins, we can now select a subset of MAGs on which to do the PUL predictions:
-
-```{r}
-# Load the CheckM2 and GTDB reports
-gtdb <- read_delim("analyses/enterococcus_diversity_II/binning/short/isabl1/gtdb/gtdbtk.bac120.summary.tsv")
-checkm <- read_delim("analyses/bacteroides_pul/checkm2/quality_report.tsv")
-
-# Join the reports, starting with the GTDB which includes only the MAGs from Bacteria and split the classification string
-full_report <- left_join(gtdb, checkm, by = c("user_genome" = "Name")) %>%
-  separate(classification,
-           into = c("domain", "phylum", "class", "order", "family", "genus", "species"),
-           sep = ";",
-           fill = "right",
-           remove = FALSE) %>%
-  mutate(across(c(domain, phylum, class, order, family, genus, species),
-                ~ sub("^[a-z]__","", .))) %>%
-  mutate(family = case_when(
-                            str_detect(genus, "revotella") ~ "Prevotellaceae",
-                            TRUE ~ family
-  ))
-
-# Get list of MAGs with >90% completion and <10% contamination
-nc_mags <- full_report %>%
-  filter(Contamination <= 10 & Completeness >= 90 & Contig_N50 >= 50000) %>%
-  pull(user_genome) %>%
-  unique
-
-write(nc_mags, "analyses/bacteroides_pul/isabl1_nc_mags.txt")
-```
-
-By filtering MAGs with >90% completeness, <10% contamination, and contig N50 >= 50,000 bp, we en up with 10360 MAGs from 980 species out of 1578 (~62%) of all species detected. All 10 major phyla and ~70-80% of all other taxonomic ranks are represented in this set.
-
-Now, let's predict CGCs and PULs for those selected MAGs:
-
-```{bash, eval=FALSE}
-sbatch code/scripts/bacteroides_pul/isabl1_mags_dbcan_1-9999.sh # 6000821
-sbatch code/scripts/bacteroides_pul/isabl1_mags_dbcan_10000-10360.sh # 6001620
-```
-
-And then predict the signal peptides of the CGC proteins:
-
-```{bash, eval=FALSE}
-sbatch code/scripts/bacteroides_pul/isabl1_mags_signalp_1-9999.sh # 6702650
-sbatch code/scripts/bacteroides_pul/isabl1_mags_signalp_10000-10360.sh # 6720114
-```
-
-### Comparing CGC content across bacterial families
-
-We start by compiling the results of the CGC predictions across all MAGs:
-
-```{bash, eval=FALSE}
-# Directory for results
-mkdir -p analyses/bacteroides_pul/mag_pul_summary
-
-# Ins and outs
-NC_MAGS="analyses/bacteroides_pul/isabl1_nc_mags.txt"
-CGC_OUT="analyses/bacteroides_pul/mag_pul_summary/compiled_cgcs.tsv"
-
-# Get header from first file that exists
-FIRST_MAG=$(head -n 1 ${NC_MAGS})
-FIRST_FILE="analyses/bacteroides_pul/mag_pul_prediction/isabl1/${FIRST_MAG}/cgc_standard_out.tsv"
-
-# Write header with added 'mag' column
-echo -e "mag\t$(head -n 1 ${FIRST_FILE})" > ${CGC_OUT}
-
-# Process each MAG
-while IFS= read -r MAG; do
-    TSV_FILE="analyses/bacteroides_pul/mag_pul_prediction/isabl1/${MAG}/cgc_standard_out.tsv"
-    
-    if [ -f "${TSV_FILE}" ]; then
-        # Add MAG column and append data (skip header)
-        tail -n +2 ${TSV_FILE} | awk -v mag="${MAG}" 'BEGIN{OFS="\t"} {print mag, $0}' >> ${CGC_OUT}
-        echo "Processed: ${MAG}"
-    else
-        echo "Warning: File not found for ${MAG}"
-    fi
-done < ${NC_MAGS}
-```
-
-and also compiling the results of signalP across all MAGs:
-
-```{bash, eval=FALSE}
-# Compiled output
-SIG_OUT="analyses/bacteroides_pul/mag_pul_summary/compiled_signalp.tsv"
-
-# Get header from first file that exists
-FIRST_MAG=$(head -n 1 ${NC_MAGS})
-FIRST_FILE="analyses/bacteroides_pul/mag_pul_prediction/isabl1/${FIRST_MAG}/signalp/prediction_results.txt"
-
-# Write header with added 'mag' column (using sed to get exactly line 2)
-echo -e "mag\t$(sed -n '2p' ${FIRST_FILE})" > ${SIG_OUT}
-
-# Process each MAG
-while IFS= read -r MAG; do
-    TSV_FILE="analyses/bacteroides_pul/mag_pul_prediction/isabl1/${MAG}/signalp/prediction_results.txt"
-    
-    if [ -f "${TSV_FILE}" ]; then
-        # Add MAG column and append data (skip header)
-        tail -n +3 ${TSV_FILE} | awk -v mag="${MAG}" 'BEGIN{OFS="\t"} {print mag, $0}' >> ${SIG_OUT}
-        echo "Processed: ${MAG}"
-    else
-        echo "Warning: File not found for ${MAG}"
-    fi
-done < ${NC_MAGS}
-```
-
-Now, we can integrate the CGC CAZyme predictions, the singalP predictions, the MAG taxonomy, and assembly QC report: 
-
-```{r}
-# For loading large tables
-library(data.table)
-
-# Load the compiled CGC and signalP results
-compiled_cgc <- fread("analyses/bacteroides_pul/mag_pul_summary/compiled_cgcs.tsv")
-compiled_signalp <- fread("analyses/bacteroides_pul/mag_pul_summary/compiled_signalp.tsv") %>%
-  separate(`# ID`, into = c("temp", "cgc", "protein_id"), sep = "\\|", remove = TRUE, extra = "drop") %>%
-  select(mag, cgc, protein_id, Prediction)
-
-# Integrate cazyme and signalP data
-cazyme_data <- compiled_cgc %>%
-  group_by(mag, `CGC#`) %>%
-  filter(!any(str_detect(`Gene Annotation`, "GT"))) %>%
-  ungroup() %>%
-  filter(`Gene Type` == "CAZyme") %>%
-  mutate( # Extract cazyme subfam string for catalytic subfamilies
-    cazy_subfam = case_when(
-    str_count(`Gene Annotation`, "\\|") == 1 ~ str_split_i(`Gene Annotation`, "\\|", 2),
-    str_detect(`Gene Annotation`, "GH|PL|CE") ~ {
-      fields <- str_split(`Gene Annotation`, "\\|", simplify = TRUE)[1,]
-      target_field <- fields[str_detect(fields, "GH|PL|CE")][1]
-      str_remove(target_field, "\\+.*$")
-    },
-    TRUE ~ str_remove(`Gene Annotation`, "^[^|]*\\|")
-    )
-  ) %>%
-  filter(str_detect(cazy_subfam, "GH|PL|CE")) %>% # Filter to catabolic CAZymes
-  mutate( # Get cazyme fam
-    cazy_fam = str_remove(cazy_subfam, "_.*")
-  ) %>% # Get cazy type
-  mutate(
-    cazy_type = str_extract(cazy_fam, "GH|PL|CE")
-    ) %>% # Add signalP predictions
-  left_join(
-    select(compiled_signalp, mag, protein_id, Prediction),
-    by = c("Protein ID" = "protein_id", "mag")) %>% 
-  left_join( # Add taxonomy and assembly statistics
-    select(full_report, user_genome, domain, phylum, class, order, family, genus, species, Completeness, Contamination, Contig_N50, Genome_Size, Total_Contigs, Max_Contig_Length),
-    by = c("mag" = "user_genome")
-  )
-
-head(cazyme_data)
-```
-
-Let's make sure the joining worked properly; there shuold be 501,943 entries and no NAs:
-
-```{r}
-# Check for NAs in key columns
-na_summary <- cazyme_data %>%
-  summarise(
-    na_cazy_subfam = sum(is.na(cazy_subfam)),
-    na_cazy_fam = sum(is.na(cazy_fam)),
-    na_cazy_type = sum(is.na(cazy_type)),
-    na_Prediction = sum(is.na(Prediction)),
-    na_genus = sum(is.na(genus)),
-    na_family = sum(is.na(family)),
-    total_rows = n()
-  )
-print(na_summary)
-```
-
-Now, I can summarize the CAZyme and polysaccharide potential at the family level:
-
-```{r}
-# Summarize total CGCs per MAG
-cgcs_per_mag <- cazyme_data %>%
-  group_by(mag) %>%
-  summarise(n_CGCs = n_distinct(`CGC#`))
-
-# Summarize total CAZymes per cazy_type per MAG
-cazymes_per_type <- cazyme_data %>%
-  group_by(mag, cazy_type) %>%
-  summarise(n_cazymes = n(), .groups = "drop") %>%
-  pivot_wider(names_from = cazy_type, values_from = n_cazymes, names_prefix = "n_", values_fill = 0)
-
-# Summarize number of CGCs per MAG with at least one CAZyme with a signal peptide
-cgcs_signalp_per_mag <- cazyme_data %>%
-  filter(Prediction != "OTHER") %>%
-  group_by(mag) %>%
-  summarise(n_CGCs_signalp = n_distinct(`CGC#`))
-
-# Summarize CAZymes per cazy_type with signal peptide (Prediction != "OTHER")
-cazymes_signalp <- cazyme_data %>%
-  filter(Prediction != "OTHER") %>%
-  group_by(mag, cazy_type) %>%
-  summarise(n_cazymes_signalp = n(), .groups = "drop") %>%
-  pivot_wider(names_from = cazy_type, values_from = n_cazymes_signalp, names_prefix = "n_signalp_", values_fill = 0)
-
-# Compile MAG level summaries
-mag_cazy_summary <- cgcs_per_mag %>%
-  left_join(cazymes_per_type, by = "mag") %>%
-  left_join(cazymes_signalp, by = "mag") %>%
-  left_join(cgcs_signalp_per_mag, by = "mag") %>%
-  left_join(
-    full_report %>%
-      select(user_genome, domain, phylum, class, order, family, genus, species, Completeness, Contamination, Contig_N50, Genome_Size, Total_Contigs, Max_Contig_Length),
-    by = c("mag" = "user_genome")
-  ) %>%
-  mutate(
-    n_CGCs_signalp = replace_na(n_CGCs_signalp, 0),
-    across(starts_with("n_signalp_"), ~replace_na(., 0))
-  )
-```
-
-Let's download the bac120 tree and metadata from GTDB release 226 to use as a baseline for plotting the cazyme information:
-
-```{bash, eval = FALSE}
-curl -o analyses/bacteroides_pul/mag_pul_summary/bac120_r226.tree https://data.ace.uq.edu.au/public/gtdb/data/releases/release226/226.0/bac120_r226.tree
-curl -o analyses/bacteroides_pul/mag_pul_summary/bac120_taxonomy_r226.tsv https://data.ace.uq.edu.au/public/gtdb/data/releases/release226/226.0/bac120_taxonomy_r226.tsv
-curl -o analyses/bacteroides_pul/mag_pul_summary/bac120_metadata_r226.tsv.gz https://data.ace.uq.edu.au/public/gtdb/data/releases/latest/bac120_metadata.tsv.gz
-```
-
-We will do the summaries at the family level, so we need to subset the GTDB tree to the families included in our MAGs:
-
-```{r}
-library(ape)
-library(treeio)
-
-# Load the tree and taxonomy
-bac120_tree <- read.tree("analyses/bacteroides_pul/mag_pul_summary/bac120_r226.tree")
-bac120_taxonomy <- read_delim("analyses/bacteroides_pul/mag_pul_summary/bac120_taxonomy_r226.tsv", col_names = FALSE, delim = "\t") %>%
-  rename(genome = X1, taxonomy = X2) %>%
-  separate(taxonomy,
-           into = c("domain", "phylum", "class", "order", "family", "genus", "species"),
-           sep = ";",
-           fill = "right",
-           remove = FALSE) %>%
-  mutate(across(c(domain, phylum, class, order, family, genus, species),
-                ~ sub("^[a-z]__", "", .))) %>%
-  mutate(family = case_when(
-                            str_detect(genus, "revotella") ~ "Prevotellaceae",
-                            TRUE ~ family
-  ))
-
-# Get list of target families
-families <- full_report %>% 
-  filter(Contamination <= 10 & Completeness >= 90 & Contig_N50 >= 50000 & family != "UBA932") %>% 
-  pull(family) %>%
-  unique
-
-# Key between target genome labels and taxonomy
-family_genomes_key <- bac120_taxonomy %>%
-  filter(family %in% families & genome %in% bac120_tree$tip.label) %>%
-  group_by(family) %>%
-  slice_sample(n = 1) %>%
-  ungroup()
-
-# Target genome labels for filtering
-family_genomes <-family_genomes_key %>%
-  pull(genome)
-
-# Subset tree to genomes from target family
-family_tree <- keep.tip(bac120_tree, family_genomes)
-```
-
-Let's now integrate the tree data with the family genome key and create the base tree plot:
-
-```{r}
-library(ggtree)
-
-# Tree plot with tip labels as family names
-family_tree_plot <- ggtree(family_tree) %<+% family_genomes_key +
-  geom_tiplab(aes(label = family), size = 3, align = TRUE)
-
-# Add label key to cazy data for plotting
-plot_data <-  mag_cazy_summary %>%
-  left_join(family_genomes_key %>% select(family, genome), by = "family")
-```
-
-I made a function to plot the distributions of cazymes and CGCs to align to the family tree:
-
-```{r}
-# Function to make th percentile plot
-make_percentile_plot <- function(summary_data, variable, tip_order, phylum_col = "phylum", genome_col = "genome", dot_color = "#252eb0", line_color = "gray50") {
-  var_sym <- rlang::ensym(variable)
-  phylum_sym <- rlang::ensym(phylum_col)
-  genome_sym <- rlang::ensym(genome_col)
-  
-  # Filter and order data by tree tip order
-  plot_df <- summary_data %>%
-    filter(.data[[rlang::as_string(genome_sym)]] %in% tip_order) %>%
-    mutate(y_plot = factor(.data[[rlang::as_string(genome_sym)]], levels = tip_order)) %>%
-    group_by(y_plot, !!phylum_sym) %>%
-    summarise(
-      median = median(!!var_sym, na.rm = TRUE),
-      p2.5 = quantile(!!var_sym, 0.025, na.rm = TRUE),
-      p97.5 = quantile(!!var_sym, 0.975, na.rm = TRUE),
-      .groups = "drop"
-    )
-  
-  # Calculate phylum boundaries based on tip order
-  phylum_bounds <- plot_df %>%
-    group_by(!!phylum_sym) %>%
-    summarise(
-      top = min(as.numeric(y_plot)),
-      bottom = max(as.numeric(y_plot)),
-      label_genome = y_plot[which.min(as.numeric(y_plot))],
-      .groups = "drop"
-    )
-  
-  # Plot
-  p <- ggplot(plot_df, aes(y = y_plot)) +
-    geom_linerange(aes(xmin = p2.5, xmax = p97.5), size = 1, color = line_color) +
-    geom_point(aes(x = median), size = 2, color = dot_color) +
-    labs(x = rlang::as_label(var_sym), y = NULL) +
-    theme_minimal(base_size = 10) +
-    theme(
-      axis.text.y = element_blank(), 
-      axis.title.y = element_blank(),
-      axis.text.x = element_text(color = "black"),
-      panel.border = element_rect(color = "black", fill = NA, linewidth = 0.75)
-    )
-  
-  # Add horizontal lines between phyla (except after last)
-  if (nrow(phylum_bounds) > 1) {
-    for (i in seq_len(nrow(phylum_bounds) - 1)) {
-      p <- p + geom_hline(yintercept = phylum_bounds$bottom[i] + 0.5, linetype = "dotted", color = "gray40")
-    }
-  }
-  
-  # Add phylum labels aligned with the top taxon in each phylum
-  p <- p + geom_text(
-    data = phylum_bounds,
-    aes(x = -Inf, y = top, label = !!phylum_sym),
-    hjust = -0.1, vjust = 0.5, size = 3, fontface = "bold", inherit.aes = FALSE
-  )
-  
-  return(p)
-}
-```
-
-Now, let's generate the plots for GHs, PLs, CGCs, with and without signal peptides:
-
-```{r}
-library(aplot)
-
-# Get tip labels ordered by their y coordinate (as plotted)
-tree_data <- family_tree_plot$data
-tip_order <- tree_data %>%
-  filter(isTip) %>%
-  arrange(y) %>%
-  pull(label)
-
-# Make all iqr plots for all variables
-cgc_iqr <- make_percentile_plot(plot_data, n_CGCs, tip_order)
-gh_iqr <- make_percentile_plot(plot_data, n_GH, tip_order)
-pl_iqr <- make_percentile_plot(plot_data, n_PL, tip_order)
-signalp_cgc_iqr <- make_percentile_plot(plot_data, n_CGCs_signalp, tip_order)
-signalp_gh_iqr <- make_percentile_plot(plot_data, n_signalp_GH, tip_order)
-signalp_pl_iqr <- make_percentile_plot(plot_data, n_signalp_PL, tip_order)
-
-# Align iqr plots to the left of the tree
-cgc_iqr_plot <- cgc_iqr %>% insert_left(family_tree_plot, width = 0.75)
-gh_iqr_plot <- gh_iqr %>% insert_left(family_tree_plot, width = 0.75)
-pl_iqr_plot <- pl_iqr %>% insert_left(family_tree_plot, width = 0.75)
-signalp_cgc_iqr_plot <- signalp_cgc_iqr %>% insert_left(family_tree_plot, width = 0.75)
-signalp_gh_iqr_plot <- signalp_gh_iqr %>% insert_left(family_tree_plot, width = 0.75)
-signalp_pl_iqr_plot <- signalp_pl_iqr %>% insert_left(family_tree_plot, width = 0.75)
-
-# Save plots
-ggsave("document/plots/cgc_iqr.pdf", cgc_iqr_plot, width = 9, height = 9)
-ggsave("document/plots/gh_iqr.pdf", gh_iqr_plot, width = 9, height = 9)
-ggsave("document/plots/pl_iqr.pdf", pl_iqr_plot, width = 9, height = 9)
-ggsave("document/plots/signalp_cgc_iqr.pdf", signalp_cgc_iqr_plot, width = 9, height = 9)
-ggsave("document/plots/signalp_gh_iqr.pdf", signalp_gh_iqr_plot, width = 9, height = 9)
-ggsave("document/plots/signalp_pl_iqr.pdf", signalp_pl_iqr_plot, width = 9, height = 9)
-```
-
-### Dynamics of Bacteroidota families following antibiotic exposure
-
-Based on the previous comparison, the families in the phylum Bacteroidota are clearly the ones with the highest content of CGCs with potential for extracellular polysaccharide degradation. That includes some families that seem common, such as Tannerellaceae and Rikenellaceae. Now, I want to test whether there is differential prevalence of taxa in this phylum after the antibiotic prophylaxis to determine what lineages beyond Bacteroides with high CGC content could also engage in cooperative polysaccharide breakdown in our patients. For that, I performed a linear mixed regression of detection (>0.1% relative abundance) of each family after at least one day of quinolone prophylaxis and plotted the family-specific coefficients:
-
-```{r}
-library(lme4)
-library(broom.mixed)
-
-# Get family-level relative abundances
-tblrel_family_meta <- prep_taxa_counts("family")
-
-# Define target families and abundance columns
-target_families <- c("Bacteroidaceae", "Barnesiellaceae", "Dysgonomonadaceae", "Marinifilaceae", "Rikenellaceae", "Tannerellaceae", "Prevotellaceae")
-abund_cols <- paste0(target_families, "_abund")
-
-# For each patient, determine first day of quinolone exposure
-quin_start <- tblpatientday_clinical %>%
-  filter(quinolones == 1 & DayRelativeToNearestHCT <= 30) %>%
-  group_by(PatientID) %>%
-  summarise(first_quin_day = min(DayRelativeToNearestHCT, na.rm = TRUE))
-
-# Subset to samples up to day 30 after HCT
-tbl_prevalence <- tblrel_family_meta %>%
-  filter(DayRelativeToNearestHCT <= 30) %>% # Subset to samples up to day 30 after HCT
-  # Merge with clinical table to get quinolone exposure
-  left_join(tblpatientday_clinical %>% select(PatientID, DayRelativeToNearestHCT, quinolones), 
-            by = c("PatientID", "DayRelativeToNearestHCT")) %>% 
-  left_join(quin_start, by = "PatientID") %>%
-  # Annotate each sample as pre- or post-prophylaxis
-  mutate(
-    prophylaxis_status = case_when(
-      is.na(first_quin_day) ~ "pre", # never received quinolones
-      DayRelativeToNearestHCT < first_quin_day ~ "pre",
-      DayRelativeToNearestHCT >= (first_quin_day + 1) ~ "post",
-      TRUE ~ NA_character_
-    )
-  ) %>%
-  filter(!is.na(prophylaxis_status) & prophylaxis_status %in% c("pre", "post"))
-
-# Set reference level for prophylaxis_status to "pre"
-tbl_prevalence$prophylaxis_status <- factor(tbl_prevalence$prophylaxis_status, levels = c("pre", "post"))
-
-# For each family, create a binary prevalence column (1 if abundance >= 0.001, else 0)
-for (fam in target_families) {
-  col <- paste0(fam, "_abund")
-  prev_col <- paste0(fam, "_prev")
-  tbl_prevalence[[prev_col]] <- as.integer(tbl_prevalence[[col]] >= 0.001)
-}
-
-# Store the models (not summaries)
-prevalence_results <- list()
-
-for (fam in target_families) {
-  prev_col <- paste0(fam, "_prev")
-  dat <- tbl_prevalence %>%
-    filter(!is.na(.data[[prev_col]]), !is.na(prophylaxis_status))
-  
-  # Fit model and store the MODEL OBJECT (not summary)
-  model <- glmer(
-    formula = as.formula(paste(prev_col, "~ prophylaxis_status + (1|PatientID)")),
-    data = dat,
-    family = binomial
-  )
-  
-  prevalence_results[[fam]] <- model  # Store model, not summary(model)
-}
-
-# Now extract effects with broom.mixed
-prevalence_effects <- bind_rows(
-  lapply(names(prevalence_results), function(fam) {
-    mod <- prevalence_results[[fam]]
-    tidy_mod <- broom.mixed::tidy(mod, effects = "fixed", conf.int = TRUE)
-    tidy_mod %>%
-      filter(term == "prophylaxis_statuspost") %>%
-      mutate(family = fam)
-  })
-)
-
-# Plot (log odds ratio)
-bacteroidota_detection <- ggplot(prevalence_effects, aes(x = factor(family, levels = c("Prevotellaceae", "Bacteroidaceae", "Tannerellaceae", "Rikenellaceae", "Barnesiellaceae", "Marinifilaceae", "Dysgonomonadaceae")), y = estimate, ymin = conf.low, ymax = conf.high)) +
-  geom_pointrange(size = 0.3) +
-  geom_hline(yintercept = 0, linetype = "dashed", color = "gray50") +
-  labs(
-    x = "Family",
-    y = "Effect of prophylaxis on detection (>0.1%)"
-  ) +
-  custom_theme+
-  theme(axis.text.x = element_text(angle = 45, hjust = 1))
-
-# Save the plot
-ggsave("document/plots/bacteroidota_prophylaxis_effect.pdf", width = 3.5, height = 5)
-```
-
-Let's also plot the distribution of median relative abundances per patient after quinolone prophylaxis for each family: 
-
-```{r}  
-# Calculate median abundance per patient for each family
-patient_medians <- post_tbl %>%
-  filter(prophylaxis_status == "post") %>%
-  select(PatientID, all_of(paste0(target_families, "_abund"))) %>%
-  pivot_longer(
-    cols = ends_with("_abund"),
-    names_to = "family",
-    values_to = "abundance"
-  ) %>%
-  mutate(family = str_remove(family, "_abund$")) %>%
-  group_by(PatientID, family) %>%
-  summarise(median_abundance = median(abundance, na.rm = TRUE), .groups = "drop")
-
-# Plot distributions
-bacteroidota_fam_abund <- ggplot(patient_medians, 
-  aes(x = factor(family,levels = c("Bacteroidaceae", "Tannerellaceae", "Prevotellaceae", "Rikenellaceae", "Barnesiellaceae", "Marinifilaceae", "Dysgonomonadaceae")),
-    y = log10(median_abundance + 1e-5))) +
-  geom_boxplot(outlier.shape = NA, alpha = 0.7, fill = "gray75") +
-  geom_jitter(width = 0.2, alpha = 0.2, color = "gray20") +
-  labs(
-  x = "Family",
-  y = "log10(median relative abundance per patient)"
-  ) +
-  custom_theme +
-  theme(legend.position = "none",
-        axis.text.x = element_text(angle = 45, hjust = 1))
-
-# Save plot
-ggsave("document/plots/bacteroidota_fam_abund.pdf", bacteroidota_fam_abund, width = 4, height = 5)
-```
-
-And run a Friedman test and paired Wilcoxon signed-rank test between all pairs of families to compare:
-
-```{r}
-# Pivot to wide format for the Friedman test (one row per patient, one column per family)
-patient_medians_wide <- patient_medians %>%
-  pivot_wider(names_from = family, values_from = median_abundance)
-
-# Friedman test
-friedman_data <- patient_medians_wide %>%
-  select(-PatientID)
-friedman_matrix <- as.matrix(friedman_data)
-friedman_result <- friedman.test(friedman_matrix)
-
-# Paired Wilcoxon signed-rank tests for all family pairs
-family_names <- colnames(friedman_matrix)
-wilcox_results <- combn(family_names, 2, simplify = FALSE, FUN = function(pair) {
-  test <- wilcox.test(
-    friedman_matrix[, pair[1]],
-    friedman_matrix[, pair[2]],
-    paired = TRUE,
-    exact = FALSE
-  )
-  tibble(
-    family1 = pair[1],
-    family2 = pair[2],
-    p.value = test$p.value,
-    statistic = test$statistic
-  )
-}) %>% bind_rows()
-
-# Adjust p-values for multiple testing (FDR)
-wilcox_results <- wilcox_results %>%
-  mutate(p.adj = p.adjust(p.value, method = "fdr"))
-
-# Print results
-print(friedman_result)
-print(wilcox_results)
-```
-
-Now let's make a bar plot showing the number of patients in which each family has relative abundance >= 0.1 in at least one sample post prophylaxis:
-
-```{r}
-# For each patient and family, check if any sample has abundance >= 0.1
-patient_family_present <- tbl_prevalence %>%
-  filter(prophylaxis_status == "post") %>%
-  select(PatientID, all_of(paste0(target_families, "_abund"))) %>%
-  pivot_longer(
-    cols = ends_with("_abund"),
-    names_to = "family",
-    values_to = "abundance"
-  ) %>%
-  mutate(family = str_remove(family, "_abund$")) %>%
-  group_by(PatientID, family) %>%
-  summarise(present = any(abundance >= 0.1, na.rm = TRUE), .groups = "drop")
-
-# Count number of patients per family (including 0 for families with no patients meeting condition)
-family_patient_counts <- patient_family_present %>%
-  filter(present) %>%
-  group_by(family) %>%
-  summarise(n_patients = n_distinct(PatientID)) %>%
-  ungroup() %>%
-  # Ensure all target families are included, filling with 0 if missing
-  right_join(tibble(family = target_families), by = "family") %>%
-  mutate(n_patients = replace_na(n_patients, 0))
-
-# Bar plot
-bacteroidota_fam_0.1 <- ggplot(family_patient_counts, 
-  aes(x = factor(family, levels = c("Bacteroidaceae", "Tannerellaceae", "Prevotellaceae", "Rikenellaceae", "Barnesiellaceae", "Marinifilaceae", "Dysgonomonadaceae")), 
-      y = n_patients)) +
-  geom_col(alpha = 0.7, fill = "gray75", color = "black") +
-  geom_text(aes(label = n_patients), vjust = -0.5, size = 3) +
-  labs(
-    x = "Family",
-    y = "Patients with ≥ 10% rel. abundance post-prophylaxis"
-  ) +
-  custom_theme +
-  theme(legend.position = "none",
-        axis.text.x = element_text(angle = 45, hjust = 1))
-
-# Save the plot
-ggsave("document/plots/bacteroidota_fam_0.1.pdf", bacteroidota_fam_0.1, width = 4, height = 5)
-```
-
-### Dissecting CGC content variation within the family Bacteroidaceae
-
-Let's start by subsetting the GTDB tree to the Bacteroidaceae taxa in our dataset:
-
-```{r}
-# Get list of target species
-bacteroidaceae_spp <- full_report %>% 
-  filter(Contamination <= 10 & Completeness >= 90 & Contig_N50 >= 50000 & family == "Bacteroidaceae" & species != "") %>% 
-  pull(species) %>%
-  unique
-
-# Key between target genome labels and taxonomy
-bacteroidaceae_genomes_key <- bac120_taxonomy %>%
-  #filter(order == "Bacteroidales" & genome %in% bac120_tree$tip.label) %>%
-  filter(species %in% bacteroidaceae_spp & genome %in% bac120_tree$tip.label) %>%
-  group_by(species) %>%
-  slice_sample(n = 1) %>%
-  ungroup()
-
-# Target genome labels for filtering
-bacteroidaceae_genomes <-bacteroidaceae_genomes_key %>%
-  pull(genome)
-
-# Subset tree to genomes from target family
-bacteroidaceae_tree <- keep.tip(bac120_tree, bacteroidaceae_genomes)
-```
-
-Now, let's integrate the tree data with the family genome key and create the base tree plot:
-
-```{r}
-# Tree plot with tip labels as family names
-bacteroidaceae_tree_plot <- ggtree(bacteroidaceae_tree) %<+% bacteroidaceae_genomes_key +
-  geom_tiplab(aes(label = species), size = 3, align = T)
-
-# Add label key to cazy data for plotting
-bacteroidaceae_plot_data <-  mag_cazy_summary %>%
-  left_join(bacteroidaceae_genomes_key %>% select(species, genome), by = "species")
-```
-
-And now we can plot the distribution of CGCs across species of the Bacteroidaceae:
-
-```{r}
-# Get tip labels ordered by their y coordinate (as plotted)
-bacteroidaceae_tip_order <- bacteroidaceae_tree_plot$data %>%
-  filter(isTip) %>%
-  arrange(y) %>%
-  pull(label)
-
-# Make all iqr plots for all variables
-bacteroidaceae_cgc_iqr <- make_percentile_plot(bacteroidaceae_plot_data, n_CGCs, bacteroidaceae_tip_order)
-bacteroidaceae_gh_iqr <- make_percentile_plot(bacteroidaceae_plot_data, n_GH, bacteroidaceae_tip_order)
-bacteroidaceae_pl_iqr <- make_percentile_plot(bacteroidaceae_plot_data, n_PL, bacteroidaceae_tip_order)
-bacteroidaceae_signalp_cgc_iqr <- make_percentile_plot(bacteroidaceae_plot_data, n_CGCs_signalp, bacteroidaceae_tip_order)
-bacteroidaceae_signalp_gh_iqr <- make_percentile_plot(bacteroidaceae_plot_data, n_signalp_GH, bacteroidaceae_tip_order)
-bacteroidaceae_signalp_pl_iqr <- make_percentile_plot(bacteroidaceae_plot_data, n_signalp_PL, bacteroidaceae_tip_order)
-
-# Align iqr plots to the left of the tree
-bacteroidaceae_cgc_iqr_plot <- bacteroidaceae_cgc_iqr %>% insert_left(bacteroidaceae_tree_plot, width = 0.75)
-bacteroidaceae_gh_iqr_plot <- bacteroidaceae_gh_iqr %>% insert_left(bacteroidaceae_tree_plot, width = 0.75)
-bacteroidaceae_pl_iqr_plot <- bacteroidaceae_pl_iqr %>% insert_left(bacteroidaceae_tree_plot, width = 0.75)
-bacteroidaceae_signalp_cgc_iqr_plot <- bacteroidaceae_signalp_cgc_iqr %>% insert_left(bacteroidaceae_tree_plot, width = 0.75)
-bacteroidaceae_signalp_gh_iqr_plot <- bacteroidaceae_signalp_gh_iqr %>% insert_left(bacteroidaceae_tree_plot, width = 0.75)
-bacteroidaceae_signalp_pl_iqr_plot <- bacteroidaceae_signalp_pl_iqr %>% insert_left(bacteroidaceae_tree_plot, width = 0.75)
-```
-
-These plots dissect the variation in content across the family but they show that *B. fragilis* is one of the speces with the lowest CGC content. Perhaps looking at the predicted PUL substrates or the presence of SusC/SusD homologs would reveal more differences.
-
-### PUL substrate diversity among Bacteroidaceae species
-
-Because we are now looking within Bacteroidaceae, we will add an additional filter to the CGCs to infer their potential for cooperative polysaccharide degradation: the presence of susC/susD homologs within the CGCs.
-
-For *susD*, we will use the profile HMMs of four PFAMs (PF07980, PF12741, PF12771, PF14322) that encompass SusD-like proteins to run searches on the non-cazyme proteins in the CGCs. Let's download the profile HMMs from Interpro: 
-
-```{bash, eval=FALSE}
-# Download PFAM HMM profiles and decompress
-mkdir -p hmms/susD
-curl -o hmms/susD/PF07980.hmm.gz https://www.ebi.ac.uk/interpro/wwwapi//entry/pfam/PF07980?annotation=hmm
-curl -o hmms/susD/PF12741.hmm.gz https://www.ebi.ac.uk/interpro/wwwapi//entry/pfam/PF12741?annotation=hmm
-curl -o hmms/susD/PF12771.hmm.gz https://www.ebi.ac.uk/interpro/wwwapi//entry/pfam/PF12771?annotation=hmm
-curl -o hmms/susD/PF14322.hmm.gz https://www.ebi.ac.uk/interpro/wwwapi//entry/pfam/PF14322?annotation=hmm
-gunzip hmms/susD/*
-```
-
-After exploring the prediciton of the susD-like genes, I realized that some clusters don't include the susD either because it's not a part of it or potentially because the contigs break right around them (e.g., in B. fragilis MAGs), whereas the susC are found much more frequently, so I will use them as the PUL indicator to filter the susbtrates in Bacteroidacee.
-
-To detect *susC*, we will use the TCDB classification given by run_dbcan, which detects TonB-dependent outer membrane porins (1.B.14). So let's start by finding the CGCs of Bacteroidaceae that have a susC-like transporter:
-
-```{r}
-# Get Bacteroidaceae MAGs
-bacteroidaceae_mags <- full_report %>% 
-  filter(Contamination <= 10 & Completeness >= 90 & Contig_N50 >= 50000 & family == "Bacteroidaceae" & species != "") %>% 
-  pull(user_genome) %>%
-  unique
-
-# Filter by CGCs by susC presence
-susc_data <- compiled_cgc %>%
-  filter(mag %in% bacteroidaceae_mags & str_detect(`Gene Annotation`, "1.B.14")) %>%
-  select(mag, `CGC#`) %>%
-  distinct(mag,`CGC#`) %>%
-  add_column(susc = TRUE)
-```
-
-Now, we need to compile the PUL substrate predictions from dbCAN:
-
-```{bash, eval=FALSE}
-# Compiled output
-PUL_OUT="analyses/bacteroides_pul/mag_pul_summary/compiled_puls.tsv"
-
-# Get header from first file that exists
-FIRST_MAG=$(head -n 1 ${NC_MAGS})
-FIRST_FILE="analyses/bacteroides_pul/mag_pul_prediction/isabl1/${FIRST_MAG}/substrate_prediction.tsv"
-
-# Write header with added 'mag' column (using sed to get exactly line 2)
-echo -e "mag\t$(sed -n '1p' ${FIRST_FILE})" > ${PUL_OUT}
-
-# Process each MAG
-while IFS= read -r MAG; do
-    TSV_FILE="analyses/bacteroides_pul/mag_pul_prediction/isabl1/${MAG}/substrate_prediction.tsv"
-    
-    if [ -f "${TSV_FILE}" ]; then
-        # Add MAG column and append data (skip header)
-        tail -n +2 ${TSV_FILE} | awk -v mag="${MAG}" 'BEGIN{OFS="\t"} {print mag, $0}' >> ${PUL_OUT}
-        echo "Processed: ${MAG}"
-    else
-        echo "Warning: File not found for ${MAG}"
-    fi
-done < ${NC_MAGS}
-```
-
-Next, I will integrate the PUL and CGC data so I can filter to digestive PULs with substrate predictions and susC:
-
-```{r}
-# Load compiled PUL data, merge substrate predictions and filter to susC-containing CGCs
-compiled_puls <- read_delim("analyses/bacteroides_pul/mag_pul_summary/compiled_puls.tsv") %>%
-  mutate(`CGC#` = str_remove(`#cgcid`, ".*\\|"),
-          substrate = case_when(
-                              is.na(`dbCAN-PUL substrate`) & !is.na(`dbCAN-sub substrate`) ~ `dbCAN-sub substrate`,
-                              TRUE ~ `dbCAN-PUL substrate`
-          )) %>%
-  filter(!str_detect(substrate, ",")) %>%
-  select(mag, `CGC#`, substrate) %>%
-  left_join(susc_data, by = c("mag", "CGC#")) %>%
-  filter(susc == TRUE)
-
-# Integrate substrate data with CGC count
-pul_data <- cazyme_data %>%
-  filter(Prediction != "OTHER" & family == "Bacteroidaceae" & species != "") %>%
-  left_join(compiled_puls, by = c("mag", "CGC#")) %>%
-  filter(!str_detect(substrate, "X|synthesis")) %>%
-  left_join(bacteroidaceae_genomes_key %>% select(species, genome), by = "species") %>%
-  distinct(mag, `CGC#`, .keep_all = T) %>%
-  mutate(substrate = str_replace(substrate, "hostglycan", "host glycan")) %>%
-  group_by(mag, genome, species, substrate) %>%
-  summarise(n_cgcs = n_distinct(`CGC#`), .groups = "drop") %>%
-  group_by(genome, species, substrate) %>%
-  summarise(median_cgcs = median(n_cgcs, na.rm = TRUE), .groups = "drop")
-```
-
-For the figure, I organized the glycan substrates by primary origin and complexity according to their monomer composition and branching:
-
-```{r}
-# Define glycan order by complexity
-plantcellwall_glycans <- c(
-  "pectin",
-  "arabinoxylan",
-  "xyloglucan",
-  "arabinogalactan",
-  "galactomannan",
-  "glucomannan",
-  "alpha-mannan",
-  "beta-mannan",
-  "xylan",
-  "arabinan",
-  "galactan",
-  "alpha-galactan",
-  "beta-galactan"
-)
-plantstorage_glycans <- c(
-  "starch",
-  "beta-glucan",
-  "alpha-glucan",
-  "fructan"
-)
-marinealgae_glycans <- c(
-  "carrageenan",
-  "alginate",
-  "agarose")
-hostanimal_glycans <- c(
-  "host glycan",
-  "mucin",
-  "glycosaminoglycan",
-  "human milk oligosaccharide"
-)
-microbial_glycans <- c(
-  "capsule polysaccharide degradation",
-  "chitin"
-)
-glycan_order <- c(
-  plantcellwall_glycans,
-  plantstorage_glycans,
-  marinealgae_glycans,
-  hostanimal_glycans,
-  microbial_glycans)
-```
-
-Finally, I plotted a bubblemap showing the median number of CGCs per MAG that target each glycan substrate across the Bacteroidaceae species in our dataset, including a barplot showing the total number of substrates each species can degrade:
-
-```{r}
-# Order substrates
-pul_data <- filter(pul_data, substrate %in% glycan_order)
-pul_data$substrate <- factor(pul_data$substrate, levels = glycan_order)
-
-# Create a data frame mapping substrates to their origin
-substrate_origin <- data.frame(
-  substrate = c(plantcellwall_glycans, plantstorage_glycans, marinealgae_glycans, 
-                hostanimal_glycans, microbial_glycans),
-  origin = c(rep("Plant cell wall", length(plantcellwall_glycans)),
-             rep("Plant storage", length(plantstorage_glycans)),
-             rep("Marine algae", length(marinealgae_glycans)),
-             rep("Host/animal", length(hostanimal_glycans)),
-             rep("Microbial", length(microbial_glycans)))
-)
-
-# Define colors for each origin
-origin_colors <- c(
-  "Plant cell wall" = "#99ce91",
-  "Plant storage" = "#ba8e67",
-  "Marine algae" = "#88edc4",
-  "Host/animal" = "#f5c4c4",
-  "Microbial" = "#c9b8e0"
-)
-
-# Ensure substrate is a factor with the same levels as in pul_data
-substrate_origin$substrate <- factor(substrate_origin$substrate, levels = glycan_order)
-
-# Create the main bubblemap without x-axis labels
-substrate_bubblemap <- ggplot(pul_data, 
-  aes(x = substrate, y = genome, size = median_cgcs, color = median_cgcs)) +
-  geom_point(alpha = 0.8) +
-  scale_size_continuous(name = "Median CGCs") +
-  scale_color_viridis_c(name = "Median CGCs", direction = -1) +
-  theme_minimal(base_size = 10) +
-  theme(
-    axis.text.x = element_blank(),
-    axis.text.y = element_blank(),
-    axis.title.y = element_blank(),
-    axis.title.x = element_blank()
-  )
-
-# Create origin tile plot WITH x-axis labels at 45 degrees and vertical legend
-origin_tile_plot <- ggplot(substrate_origin, 
-  aes(x = substrate, y = 1, fill = origin)) +
-  geom_tile(height = 0.1) +
-  scale_fill_manual(values = origin_colors, name = "Glycan origin") +
-  scale_x_discrete(position = "bottom") +
-  scale_y_continuous(expand = c(0, 0)) +
-  theme_minimal(base_size = 10) +
-  theme(
-    axis.text.y = element_blank(),
-    axis.ticks.y = element_blank(),
-    axis.title.y = element_blank(),
-    panel.grid = element_blank(),
-    axis.text.x = element_text(angle = 45, hjust = 1),
-    legend.position = "right"
-  ) +
-  labs(x = "Glycan substrate")
-
-# Summarize number of substrates
-substrate_count_data <- pul_data %>%
-  group_by(genome, species) %>%
-  summarise(n_substrates = n_distinct(substrate), .groups = "drop")
-
-# Create a bar plot of total unique substrates per genome
-substrate_count_plot <- ggplot(substrate_count_data, 
-  aes(x = n_substrates, y = genome)) +
-  geom_col(fill = "gray60", alpha = 0.7) +
-  scale_y_discrete(limits = bacteroidaceae_tip_order) +
-  scale_x_continuous(breaks = c(0, 10, 20)) +
-  theme_minimal(base_size = 10) +
-  theme(
-    axis.text.y = element_blank(),
-    axis.title.y = element_blank(),
-    panel.grid.major.y = element_blank(),
-    panel.grid.major.x = element_blank(),
-    panel.grid.minor.x = element_blank()
-  ) +
-  labs(x = "Substrates")
-
-
-# Align all plots: tree on left, bubblemap in middle, substrate count on right, origin tiles below
-combined_plot <- substrate_bubblemap %>% 
-  insert_left(bacteroidaceae_tree_plot, width = 0.2) %>%
-  insert_right(substrate_count_plot, width = 0.15) %>%
-  insert_bottom(origin_tile_plot, height = 0.02)
-
-# Save the plot
-ggsave(filename = "document/plots/bacteroidaceae_substrate_bubblemap.pdf",
-  plot = combined_plot,
-  height = 5, width = 8)
-```
 
 ### Substrates
 

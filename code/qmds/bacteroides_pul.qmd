@@ -408,6 +408,10 @@ Based on the previous comparison, the families in the phylum Bacteroidota are cl
 library(lme4)
 library(broom.mixed)
 
+# Load the patientday table
+load("analyses/processed_data/tblpatientday_clinical.RData")
+tblpatientday_clinical$DayRelativeToNearestHCT <- as.numeric(as.character(tblpatientday_clinical$DayRelativeToNearestHCT))
+
 # Get family-level relative abundances
 tblrel_family_meta <- prep_taxa_counts("family")
 
@@ -1044,7 +1048,7 @@ tblrel_family <- prep_taxa_counts("family") %>%
   select(Sample, Enterobacteriaceae_abund, Bacteroidaceae_abund, Pseudomonadaceae_abund, Tannerellaceae_abund)
 tblrel_asv <- prep_taxa_counts("asv") %>%
   select(Sample, all_of(top_asvs_postquin_cols))
-microb_features <- tblrel_phylum_meta %>%
+microb_features <- tblrel_phylum %>%
   left_join(tblrel_family, by = "Sample") %>%
   left_join(tblrel_asv, by = "Sample") %>%
   mutate(Pseudoentero_abund = Enterobacteriaceae_abund + Bacteroidaceae_abund,
@@ -1199,6 +1203,9 @@ Next, I made a function to fir six different regression models of BSI with diffe
   - Model on full detection with prophylaxis status (1,082 patients): Infected ~ Median taxon abundance > 0.01 + prophylaxis
 
 ```{r}
+# Library for model handling
+library(broom)
+
 # Function to fit all 6 model types for a given taxon
 fit_taxon_models <- function(taxon_name, data) {
   
@@ -1221,7 +1228,7 @@ fit_taxon_models <- function(taxon_name, data) {
       formula_str <- paste0("has_infection ~ log10(", median_post, " + 0.00001)")
       model <- glm(as.formula(formula_str), data = features_post, family = binomial)
       
-      results$median_post <- tidy(model) %>%
+      results$median_post <- broom::tidy(model) %>%
         filter(term != "(Intercept)") %>%
         mutate(
           model_type = "median_post",
@@ -1240,7 +1247,7 @@ fit_taxon_models <- function(taxon_name, data) {
       formula_str <- paste0("has_infection ~ ", detected_post)
       model <- glm(as.formula(formula_str), data = features_post, family = binomial)
       
-      results$detection_post <- tidy(model) %>%
+      results$detection_post <- broom::tidy(model) %>%
         filter(term != "(Intercept)") %>%
         mutate(
           model_type = "detection_post",
@@ -1260,7 +1267,7 @@ fit_taxon_models <- function(taxon_name, data) {
       formula_str <- paste0("has_infection ~ log10(", median_pre, " + 0.00001) + log10(", median_post, " + 0.00001)")
       model <- glm(as.formula(formula_str), data = features_prepost, family = binomial)
       
-      results$median_prepost <- tidy(model) %>%
+      results$median_prepost <- broom::tidy(model) %>%
         filter(term != "(Intercept)") %>%
         mutate(
           model_type = "median_prepost",
@@ -1280,7 +1287,7 @@ fit_taxon_models <- function(taxon_name, data) {
       formula_str <- paste0("has_infection ~ ", detected_pre, " + ", detected_post)
       model <- glm(as.formula(formula_str), data = features_prepost, family = binomial)
       
-      results$detection_prepost <- tidy(model) %>%
+      results$detection_prepost <- broom::tidy(model) %>%
         filter(term != "(Intercept)") %>%
         mutate(
           model_type = "detection_prepost",
@@ -1299,7 +1306,7 @@ fit_taxon_models <- function(taxon_name, data) {
       formula_str <- paste0("has_infection ~ log10(", median_all, " + 0.00001) + received_quin")
       model <- glm(as.formula(formula_str), data = features_all, family = binomial)
       
-      results$median_full <- tidy(model) %>%
+      results$median_full <- broom::tidy(model) %>%
         filter(term != "(Intercept)") %>%
         mutate(
           model_type = "median_full",
@@ -1318,7 +1325,7 @@ fit_taxon_models <- function(taxon_name, data) {
       formula_str <- paste0("has_infection ~ ", detected_all, " + received_quin")
       model <- glm(as.formula(formula_str), data = features_all, family = binomial)
       
-      results$detection_full <- tidy(model) %>%
+      results$detection_full <- broom::tidy(model) %>%
         filter(term != "(Intercept)") %>%
         mutate(
           model_type = "detection_full",

@@ -1378,6 +1378,388 @@ print(significant_results)
 
 As expected, all the Pseudomonadota predictors were significantly associated with increased BSI risk, but the significant predictors are always the full or post-prophylaxis abundances. ASV 277 seems to have to most consistent signal out of the Bacteroidaceae. The meadin abundance of Tannerellaceae was negatively associated with BSI--could it be because they compete with the Bacteroidaceae and exclude them, thus decreasing the risk of Bacteroidaceae-mediated infections?
 
+### Predictive model performance evaluation
+
+```{r}
+library(pROC)
+
+# Filter to patients who received quinolone prophylaxis and have post samples
+features_post <- patient_features %>%
+  filter(received_quin, n_samples_post > 0)
+
+# Stratified train/test split (70/30) by infection status
+set.seed(87433)
+split_by_case <- function(df, case_col = "has_infection", prop = 0.7) {
+  cases <- df %>% filter(.data[[case_col]] == TRUE)
+  controls <- df %>% filter(.data[[case_col]] == FALSE)
+  n_cases <- floor(nrow(cases) * prop)
+  n_controls <- floor(nrow(controls) * prop)
+  train_cases <- sample(seq_len(nrow(cases)), n_cases)
+  train_controls <- sample(seq_len(nrow(controls)), n_controls)
+  train <- bind_rows(cases[train_cases, ], controls[train_controls, ])
+  test <- bind_rows(cases[-train_cases, ], controls[-train_controls, ])
+  list(train = train, test = test)
+}
+splits <- split_by_case(features_post)
+
+# Model formulas
+model_formulas <- list(
+  model1 = has_infection ~ proteobacteria_detected_post,
+  model2 = has_infection ~ log10(median_proteobacteria_post + 1e-05),
+  model3 = has_infection ~ ASV_277_abund_detected_post,
+  model4 = has_infection ~ log10(median_bacteroidaceae_post + 1e-05),
+  model5 = has_infection ~ log10(median_proteobacteria_post + 1e-05) + log10(median_bacteroidaceae_post + 1e-05)
+)
+
+# Fit models on training set
+models <- lapply(model_formulas, function(form) {
+  glm(form, data = splits$train, family = binomial)
+})
+
+# Predict and evaluate on train and test sets
+evaluate_model <- function(model, train, test) {
+  # Predict probabilities
+  train_pred <- predict(model, newdata = train, type = "response")
+  test_pred <- predict(model, newdata = test, type = "response")
+  # ROC and AUC
+  train_roc <- pROC::roc(train$has_infection, train_pred)
+  test_roc <- pROC::roc(test$has_infection, test_pred)
+  tibble(
+    train_auc = as.numeric(train_roc$auc),
+    test_auc = as.numeric(test_roc$auc)
+  )
+}
+
+results <- map2(models, names(models), function(model, name) {
+  eval <- evaluate_model(model, splits$train, splits$test)
+  tibble(model = name, train_auc = eval$train_auc, test_auc = eval$test_auc)
+}) %>% bind_rows()
+
+print(results)
+
+# Plot ROC curves for each model (test set)
+par(mfrow = c(2, 3))
+for (i in seq_along(models)) {
+  test_pred <- predict(models[[i]], newdata = splits$test, type = "response")
+  roc_obj <- pROC::roc(splits$test$has_infection, test_pred)
+  plot(roc_obj, main = names(models)[i])
+}
+
+# Save results
+write_csv(results, "document/tables/model_comparison_auc.csv")
+```
+
+```{r}
+library(tidyverse)
+library(broom)
+library(pROC)
+
+# --- 1. Prepare patient-level data and split into train/test as before ---
+
+# Only patients with quinolone and post samples
+features_post <- patient_features %>%
+  filter(received_quin, n_samples_post > 0)
+
+# Stratified train/test split (by patient, 70/30)
+set.seed(87433)
+split_by_case <- function(df, case_col = "has_infection", prop = 0.75) {
+  cases <- df %>% filter(.data[[case_col]] == TRUE)
+  controls <- df %>% filter(.data[[case_col]] == FALSE)
+  n_cases <- floor(nrow(cases) * prop)
+  n_controls <- floor(nrow(controls) * prop)
+  train_cases <- sample(seq_len(nrow(cases)), n_cases)
+  train_controls <- sample(seq_len(nrow(controls)), n_controls)
+  train <- bind_rows(cases[train_cases, ], controls[train_controls, ])
+  test <- bind_rows(cases[-train_cases, ], controls[-train_controls, ])
+  list(train = train, test = test)
+}
+splits <- split_by_case(features_post)
+test_patient_ids <- splits$test$PatientID
+
+# --- 2. For each cutoff, recalculate post-prophylaxis features for test patients ---
+
+# Define cutoffs (relative to HCT)
+cutoff_days <- -2:5
+
+# Use microb_features and patientday tables from your script
+# microb_features: sample-level features (already joined with taxa abundances)
+# quin_start, first_infection, engraftment_day: already defined in your script
+
+# Function to recalculate features for a given cutoff
+recalc_patient_features_cutoff <- function(cutoff, test_patient_ids) {
+  # Subset to test patients and relevant samples
+  microb_features %>%
+    filter(PatientID %in% test_patient_ids) %>%
+    left_join(quin_start, by = "PatientID") %>%
+    left_join(first_infection, by = "PatientID") %>%
+    left_join(engraftment_day, by = "PatientID") %>%
+    mutate(
+      has_infection = !is.na(first_infection_day),
+      received_quin = !is.na(first_quin_day),
+      # For each patient, the upper bound for samples is the minimum of:
+      # - cutoff day (relative to HCT)
+      # - first infection day (if infected)
+      # - engraftment day (if not infected)
+      max_day = pmin(
+        cutoff,
+        if_else(has_infection, first_infection_day, engraftment_day),
+        na.rm = TRUE
+      )
+    ) %>%
+    filter(
+      received_quin,
+      DayRelativeToNearestHCT >= (first_quin_day + 1),
+      DayRelativeToNearestHCT < max_day
+    ) %>%
+    group_by(PatientID, has_infection, received_quin) %>%
+    summarise(
+      median_proteobacteria_post = median(Proteobacteria_abund, na.rm = TRUE),
+      proteobacteria_detected_post = any(Proteobacteria_abund >= 0.01, na.rm = TRUE),
+      median_ASV_277_abund_post = median(ASV_277_abund, na.rm = TRUE),
+      ASV_277_abund_detected_post = any(ASV_277_abund >= 0.01, na.rm = TRUE),
+      median_bacteroidaceae_post = median(Bacteroidaceae_abund, na.rm = TRUE),
+      median_tannerellaceae_post = median(Tannerellaceae_abund, na.rm = TRUE),
+      n_samples_post = n(),
+      .groups = "drop"
+    ) %>%
+    # Add infection status for test patients
+    left_join(
+      splits$test %>% select(PatientID, has_infection),
+      by = "PatientID",
+      suffix = c("", ".label")
+    ) %>%
+    mutate(has_infection = coalesce(has_infection.label, has_infection)) %>%
+    select(-has_infection.label)
+}
+
+# Generate a list of test sets for each cutoff
+test_sets_by_cutoff <- setNames(
+  lapply(cutoff_days, recalc_patient_features_cutoff, test_patient_ids = test_patient_ids),
+  paste0("cutoff_", cutoff_days)
+)
+
+# --- 3. Train models on the training set (unchanged) ---
+
+# Use the same formulas as before
+model_formulas <- list(
+  model1 = has_infection ~ proteobacteria_detected_post,
+  model2 = has_infection ~ log10(median_proteobacteria_post + 1e-05),
+  model3 = has_infection ~ ASV_277_abund_detected_post,
+  model4 = has_infection ~ log10(median_bacteroidaceae_post + 1e-05),
+  model5 = has_infection ~ log10(median_proteobacteria_post + 1e-05) * log10(median_bacteroidaceae_post + 1e-05)
+)
+
+# Fit models on training set
+models <- lapply(model_formulas, function(form) {
+  glm(form, data = splits$train, family = binomial)
+})
+
+# --- 4. Evaluate models on each test set (for each cutoff) ---
+
+evaluate_model_cutoffs <- function(model, test_sets) {
+  map_dfr(names(test_sets), function(name) {
+    test_set <- test_sets[[name]]
+    # Only evaluate if there are no missing predictors and at least 2 outcome classes
+    if (nrow(test_set) > 0 &&
+        length(unique(test_set$has_infection)) > 1 &&
+        all(all.vars(formula(model)) %in% names(test_set))) {
+      test_pred <- predict(model, newdata = test_set, type = "response")
+      roc_obj <- tryCatch(
+        pROC::roc(test_set$has_infection, test_pred),
+        error = function(e) NULL
+      )
+      auc <- if (!is.null(roc_obj)) as.numeric(roc_obj$auc) else NA_real_
+      tibble(
+        cutoff = name,
+        auc = auc,
+        n = nrow(test_set)
+      )
+    } else {
+      tibble(
+        cutoff = name,
+        auc = NA_real_,
+        n = nrow(test_set)
+      )
+    }
+  })
+}
+
+# Evaluate all models across all cutoffs
+all_auc_results <- map2(models, names(models), function(model, model_name) {
+  aucs <- evaluate_model_cutoffs(model, test_sets_by_cutoff)
+  aucs$model <- model_name
+  aucs
+}) %>% bind_rows()
+
+# --- 5. Summarize and plot ---
+
+# Wide format for plotting
+auc_wide <- all_auc_results %>%
+  mutate(cutoff_num = as.numeric(str_remove(cutoff, "cutoff_"))) %>%
+  select(model, cutoff_num, auc, n)
+
+# Plot AUC vs cutoff for each model
+library(ggplot2)
+ggplot(auc_wide, aes(x = cutoff_num, y = auc, color = model)) +
+  geom_line() +
+  geom_point() +
+  labs(
+    x = "DayRelativeToNearestHCT cutoff (max day included)",
+    y = "Test set AUC",
+    color = "Model",
+    title = "Model AUC vs. cutoff day for test set feature calculation"
+  ) +
+  theme_minimal()
+
+# Save results
+write_csv(auc_wide, "document/tables/model_auc_by_cutoff.csv")
+```
+
+```{r}
+library(tidyverse)
+library(broom)
+library(pROC)
+
+# --- 1. Prepare patient-level data as before ---
+features_post <- patient_features %>%
+  filter(received_quin, n_samples_post > 0)
+
+# --- 2. Create 5 stratified folds by patient infection status ---
+set.seed(87433)
+n_folds <- 5
+
+# Assign folds stratified by has_infection
+features_post <- features_post %>%
+  group_by(has_infection) %>%
+  mutate(fold = sample(rep(1:n_folds, length.out = n()))) %>%
+  ungroup()
+
+# --- 3. Define cutoffs and model formulas ---
+cutoff_days <- -3:5
+
+model_formulas <- list(
+  model1 = has_infection ~ log10(median_proteobacteria_post + 1e-05),
+  model2 = has_infection ~ log10(median_bacteroidaceae_post + 1e-05),
+  model3 = has_infection ~ log10(median_tannerellaceae_post + 1e-05),
+  model4 = has_infection ~ log10(median_proteobacteria_post + 1e-05) * log10(median_bacteroidaceae_post + 1e-05),
+  model5 = has_infection ~ log10(median_proteobacteria_post + 1e-05) * log10(median_tannerellaceae_post + 1e-05)
+)
+
+# --- 4. Cross-validation loop ---
+cv_auc_results <- list()
+
+for (cutoff in cutoff_days) {
+  fold_aucs <- list()
+  for (fold_n in 1:n_folds) {
+    # Split patients for this fold
+    test_patient_ids <- features_post %>% filter(fold == fold_n) %>% pull(PatientID)
+    train_patient_ids <- features_post %>% filter(fold != fold_n) %>% pull(PatientID)
+    
+    # Recalculate features for test patients at this cutoff
+    test_set <- recalc_patient_features_cutoff(cutoff, test_patient_ids)
+    train_set <- features_post %>% filter(PatientID %in% train_patient_ids)
+    
+    # Fit and evaluate each model
+    for (model_name in names(model_formulas)) {
+      form <- model_formulas[[model_name]]
+      # Only fit if all predictors are present in train and test
+      predictors <- all.vars(form)[-1]
+      if (all(predictors %in% names(train_set)) && all(predictors %in% names(test_set))) {
+        # Remove rows with missing predictors
+        train_data <- train_set %>% drop_na(any_of(predictors), has_infection)
+        test_data <- test_set %>% drop_na(any_of(predictors), has_infection)
+        # Only evaluate if both classes are present
+        if (nrow(train_data) > 0 && nrow(test_data) > 0 &&
+            length(unique(test_data$has_infection)) > 1) {
+          model <- glm(form, data = train_data, family = binomial)
+          test_pred <- predict(model, newdata = test_data, type = "response")
+          roc_obj <- tryCatch(
+            pROC::roc(test_data$has_infection, test_pred),
+            error = function(e) NULL
+          )
+          auc <- if (!is.null(roc_obj)) as.numeric(roc_obj$auc) else NA_real_
+          fold_aucs[[model_name]] <- c(fold_aucs[[model_name]], auc)
+        } else {
+          fold_aucs[[model_name]] <- c(fold_aucs[[model_name]], NA_real_)
+        }
+      } else {
+        fold_aucs[[model_name]] <- c(fold_aucs[[model_name]], NA_real_)
+      }
+    }
+  }
+  # Aggregate AUCs for this cutoff
+  for (model_name in names(model_formulas)) {
+    aucs <- fold_aucs[[model_name]]
+    cv_auc_results[[length(cv_auc_results) + 1]] <- tibble(
+      model = model_name,
+      cutoff = cutoff,
+      mean_auc = mean(aucs, na.rm = TRUE),
+      se_auc = sd(aucs, na.rm = TRUE) / sqrt(sum(!is.na(aucs))),
+      sd_auc = sd(aucs, na.rm = TRUE),
+      n_folds = sum(!is.na(aucs))
+    )
+  }
+}
+
+cv_auc_results_tbl <- bind_rows(cv_auc_results)
+
+# --- 5. Plot and save results ---
+ggplot(cv_auc_results_tbl, aes(x = cutoff, y = mean_auc, color = model)) +
+  geom_line() +
+  geom_point() +
+  geom_errorbar(aes(ymin = mean_auc - se_auc, ymax = mean_auc + se_auc), width = 0.2) +
+  labs(
+    x = "DayRelativeToNearestHCT cutoff (max day included)",
+    y = "Mean test set AUC (5-fold CV)",
+    color = "Model",
+    title = "Cross-validated Model AUC vs. cutoff day"
+  ) +
+  theme_minimal()
+
+write_csv(cv_auc_results_tbl, "document/tables/model_auc_by_cutoff_cv.csv")
+```
+
+```{r}
+# Define custom model colors
+model_colors <- c(
+  "model1" = "#e15454",
+  "model2" = "#4ae1d9",
+  "model3" = "#2c5362",
+  "model4" = "#8B4789",
+  "model5" = "#ec881e"
+)
+
+# Define model labels
+model_labels <- c(
+  "model1" = "Pseudomonadota",
+  "model2" = "Bacteroidaceae",
+  "model3" = "Tannerellaceae",
+  "model4" = "Pseudomonadota*Bacteroidaceae",
+  "model5" = "Pseudomonadota*Tannerellaceae"
+)
+
+linearmodels_auc <- cv_auc_results_tbl %>%
+  ggplot(aes(x = cutoff, y = mean_auc, color = model, fill = model, group = model)) +
+  geom_ribbon(aes(ymin = mean_auc - se_auc, ymax = pmin(mean_auc + se_auc, 1)), alpha = 0.2, color = NA) +
+  geom_line() +
+  geom_point(size = 2) +
+  scale_color_manual(values = model_colors, labels = model_labels) +
+  scale_fill_manual(values = model_colors, labels = model_labels) +
+  scale_y_continuous(limits = c(0, 1)) +
+  labs(
+    x = "Day relative to BMT (test cutoff)",
+    y = "Mean test ROC-AUC (5-fold CV)",
+    color = "Model features",
+    fill = "Model features"
+  ) +
+  custom_theme +
+  theme(legend.position = c(0.5, 0.25))
+
+ggsave("document/plots/linearmodels_auc.pdf", linearmodels_auc, width = 7, height = 5)
+```
+
+
+
 ## Quantifying PUL abundance at metagenome scale
 
 I started with the metagenomic assemblies that I generated for the Enterococcus F32 exploration. They are under `analyses/enterococcus_diversity/metagenomes/assembly/metaspades/`, but I will symlink them to a new directory to simplify paths:

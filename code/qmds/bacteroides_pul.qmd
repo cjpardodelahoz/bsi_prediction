@@ -965,6 +965,16 @@ tblrel_asv_meta <- prep_taxa_counts("asv") %>%
 Now, let's look at the abundance and detection distribution of Bacteroidaceae ASVs before and after the quinolone prophylaxis:
 
 ```{r}
+# Load the patientday table
+load("analyses/processed_data/tblpatientday_clinical.RData")
+tblpatientday_clinical$DayRelativeToNearestHCT <- as.numeric(as.character(tblpatientday_clinical$DayRelativeToNearestHCT))
+
+# For each patient, determine first day of quinolone exposure
+quin_start <- tblpatientday_clinical %>%
+  filter(quinolones == 1 & DayRelativeToNearestHCT <= 30) %>%
+  group_by(PatientID) %>%
+  summarise(first_quin_day = min(DayRelativeToNearestHCT, na.rm = TRUE))
+
 # Gather ASV abundances into long format
 asv_abund_cols <- paste0(bacteroides_slat_asvs, "_abund")
 asv_long <- tblrel_asv_meta %>%
@@ -1034,10 +1044,6 @@ ggplot(asv_patient_counts, aes(x = reorder(asv, -n_patients), y = n_patients, fi
 Let's start by making a labeled feature table at the patient level. The labeling corresponds whether the patient had a Pseudomonadota BSI during neutropenia. The features include the median relative abundance per patient of different taxa (Paseudomonadota, Enterobacteriaceae + Pseudomonadaceae, Tannerellaceae, Bacteroidaceae, and the top 12 most prevalent Bacteroidaceae ASVs post quinolone prophylaxis). For patients who had a BSI, we used samples from day -30 up to the day before the BSI. For patients who did not get a BSI, we used samples from day -30 up to the day of engrafment. We included a binary feature specifying if the patient had any quinolone prophylaxis and stratified the median calculations by the periods before and after it:
 
 ```{r}
-# Load the patientday table
-load("analyses/processed_data/tblpatientday_clinical.RData")
-tblpatientday_clinical$DayRelativeToNearestHCT <- as.numeric(as.character(tblpatientday_clinical$DayRelativeToNearestHCT))
-
 # Colnames of top Bacteroidaceae ASVs
 top_asvs_postquin_cols <- paste0(top_asvs_postquin, "_abund")
 
@@ -1365,126 +1371,22 @@ all_model_results <- all_model_results %>%
   select(taxon, model_type, term, estimate, p.value, std.error, statistic, n_samples) %>%
   arrange(taxon, model_type)
 
-# Save results
-write_csv(all_model_results, "document/tables/taxon_regression_results.csv")
-
 # Summary: significant results (p < 0.05)
 significant_results <- all_model_results %>%
   filter(p.value < 0.05) %>%
   arrange(p.value)
 
-print(significant_results)
+# Save results
+write_csv(all_model_results, "document/tables/taxon_regression_results.csv")
 ```
 
 As expected, all the Pseudomonadota predictors were significantly associated with increased BSI risk, but the significant predictors are always the full or post-prophylaxis abundances. ASV 277 seems to have to most consistent signal out of the Bacteroidaceae. The meadin abundance of Tannerellaceae was negatively associated with BSI--could it be because they compete with the Bacteroidaceae and exclude them, thus decreasing the risk of Bacteroidaceae-mediated infections?
 
 ### Predictive model performance evaluation
 
-```{r}
-library(pROC)
-
-# Filter to patients who received quinolone prophylaxis and have post samples
-features_post <- patient_features %>%
-  filter(received_quin, n_samples_post > 0)
-
-# Stratified train/test split (70/30) by infection status
-set.seed(87433)
-split_by_case <- function(df, case_col = "has_infection", prop = 0.7) {
-  cases <- df %>% filter(.data[[case_col]] == TRUE)
-  controls <- df %>% filter(.data[[case_col]] == FALSE)
-  n_cases <- floor(nrow(cases) * prop)
-  n_controls <- floor(nrow(controls) * prop)
-  train_cases <- sample(seq_len(nrow(cases)), n_cases)
-  train_controls <- sample(seq_len(nrow(controls)), n_controls)
-  train <- bind_rows(cases[train_cases, ], controls[train_controls, ])
-  test <- bind_rows(cases[-train_cases, ], controls[-train_controls, ])
-  list(train = train, test = test)
-}
-splits <- split_by_case(features_post)
-
-# Model formulas
-model_formulas <- list(
-  model1 = has_infection ~ proteobacteria_detected_post,
-  model2 = has_infection ~ log10(median_proteobacteria_post + 1e-05),
-  model3 = has_infection ~ ASV_277_abund_detected_post,
-  model4 = has_infection ~ log10(median_bacteroidaceae_post + 1e-05),
-  model5 = has_infection ~ log10(median_proteobacteria_post + 1e-05) + log10(median_bacteroidaceae_post + 1e-05)
-)
-
-# Fit models on training set
-models <- lapply(model_formulas, function(form) {
-  glm(form, data = splits$train, family = binomial)
-})
-
-# Predict and evaluate on train and test sets
-evaluate_model <- function(model, train, test) {
-  # Predict probabilities
-  train_pred <- predict(model, newdata = train, type = "response")
-  test_pred <- predict(model, newdata = test, type = "response")
-  # ROC and AUC
-  train_roc <- pROC::roc(train$has_infection, train_pred)
-  test_roc <- pROC::roc(test$has_infection, test_pred)
-  tibble(
-    train_auc = as.numeric(train_roc$auc),
-    test_auc = as.numeric(test_roc$auc)
-  )
-}
-
-results <- map2(models, names(models), function(model, name) {
-  eval <- evaluate_model(model, splits$train, splits$test)
-  tibble(model = name, train_auc = eval$train_auc, test_auc = eval$test_auc)
-}) %>% bind_rows()
-
-print(results)
-
-# Plot ROC curves for each model (test set)
-par(mfrow = c(2, 3))
-for (i in seq_along(models)) {
-  test_pred <- predict(models[[i]], newdata = splits$test, type = "response")
-  roc_obj <- pROC::roc(splits$test$has_infection, test_pred)
-  plot(roc_obj, main = names(models)[i])
-}
-
-# Save results
-write_csv(results, "document/tables/model_comparison_auc.csv")
-```
+I trained classifiers to predict whether a patient had an infection at any point between the start of quinolones and engraftment using the patient's median post-quinolone abundance of different taxa (Pseudomonadota, Bacteroidaceae, Tannerellaceae) or their interaction terms. Then, I tested model performance with medians calculated from increasingly larger sets of samples from the test patients, using the day relative to transplant as cutoffs. For this model evaluation, I needed a fucntion that would recalculate the patient medians for each given test cutoff:
 
 ```{r}
-library(tidyverse)
-library(broom)
-library(pROC)
-
-# --- 1. Prepare patient-level data and split into train/test as before ---
-
-# Only patients with quinolone and post samples
-features_post <- patient_features %>%
-  filter(received_quin, n_samples_post > 0)
-
-# Stratified train/test split (by patient, 70/30)
-set.seed(87433)
-split_by_case <- function(df, case_col = "has_infection", prop = 0.75) {
-  cases <- df %>% filter(.data[[case_col]] == TRUE)
-  controls <- df %>% filter(.data[[case_col]] == FALSE)
-  n_cases <- floor(nrow(cases) * prop)
-  n_controls <- floor(nrow(controls) * prop)
-  train_cases <- sample(seq_len(nrow(cases)), n_cases)
-  train_controls <- sample(seq_len(nrow(controls)), n_controls)
-  train <- bind_rows(cases[train_cases, ], controls[train_controls, ])
-  test <- bind_rows(cases[-train_cases, ], controls[-train_controls, ])
-  list(train = train, test = test)
-}
-splits <- split_by_case(features_post)
-test_patient_ids <- splits$test$PatientID
-
-# --- 2. For each cutoff, recalculate post-prophylaxis features for test patients ---
-
-# Define cutoffs (relative to HCT)
-cutoff_days <- -2:5
-
-# Use microb_features and patientday tables from your script
-# microb_features: sample-level features (already joined with taxa abundances)
-# quin_start, first_infection, engraftment_day: already defined in your script
-
 # Function to recalculate features for a given cutoff
 recalc_patient_features_cutoff <- function(cutoff, test_patient_ids) {
   # Subset to test patients and relevant samples
@@ -1508,7 +1410,7 @@ recalc_patient_features_cutoff <- function(cutoff, test_patient_ids) {
     ) %>%
     filter(
       received_quin,
-      DayRelativeToNearestHCT >= (first_quin_day + 1),
+      DayRelativeToNearestHCT >= (first_quin_day),
       DayRelativeToNearestHCT < max_day
     ) %>%
     group_by(PatientID, has_infection, received_quin) %>%
@@ -1521,111 +1423,22 @@ recalc_patient_features_cutoff <- function(cutoff, test_patient_ids) {
       median_tannerellaceae_post = median(Tannerellaceae_abund, na.rm = TRUE),
       n_samples_post = n(),
       .groups = "drop"
-    ) %>%
-    # Add infection status for test patients
-    left_join(
-      splits$test %>% select(PatientID, has_infection),
-      by = "PatientID",
-      suffix = c("", ".label")
-    ) %>%
-    mutate(has_infection = coalesce(has_infection.label, has_infection)) %>%
-    select(-has_infection.label)
+    )
 }
-
-# Generate a list of test sets for each cutoff
-test_sets_by_cutoff <- setNames(
-  lapply(cutoff_days, recalc_patient_features_cutoff, test_patient_ids = test_patient_ids),
-  paste0("cutoff_", cutoff_days)
-)
-
-# --- 3. Train models on the training set (unchanged) ---
-
-# Use the same formulas as before
-model_formulas <- list(
-  model1 = has_infection ~ proteobacteria_detected_post,
-  model2 = has_infection ~ log10(median_proteobacteria_post + 1e-05),
-  model3 = has_infection ~ ASV_277_abund_detected_post,
-  model4 = has_infection ~ log10(median_bacteroidaceae_post + 1e-05),
-  model5 = has_infection ~ log10(median_proteobacteria_post + 1e-05) * log10(median_bacteroidaceae_post + 1e-05)
-)
-
-# Fit models on training set
-models <- lapply(model_formulas, function(form) {
-  glm(form, data = splits$train, family = binomial)
-})
-
-# --- 4. Evaluate models on each test set (for each cutoff) ---
-
-evaluate_model_cutoffs <- function(model, test_sets) {
-  map_dfr(names(test_sets), function(name) {
-    test_set <- test_sets[[name]]
-    # Only evaluate if there are no missing predictors and at least 2 outcome classes
-    if (nrow(test_set) > 0 &&
-        length(unique(test_set$has_infection)) > 1 &&
-        all(all.vars(formula(model)) %in% names(test_set))) {
-      test_pred <- predict(model, newdata = test_set, type = "response")
-      roc_obj <- tryCatch(
-        pROC::roc(test_set$has_infection, test_pred),
-        error = function(e) NULL
-      )
-      auc <- if (!is.null(roc_obj)) as.numeric(roc_obj$auc) else NA_real_
-      tibble(
-        cutoff = name,
-        auc = auc,
-        n = nrow(test_set)
-      )
-    } else {
-      tibble(
-        cutoff = name,
-        auc = NA_real_,
-        n = nrow(test_set)
-      )
-    }
-  })
-}
-
-# Evaluate all models across all cutoffs
-all_auc_results <- map2(models, names(models), function(model, model_name) {
-  aucs <- evaluate_model_cutoffs(model, test_sets_by_cutoff)
-  aucs$model <- model_name
-  aucs
-}) %>% bind_rows()
-
-# --- 5. Summarize and plot ---
-
-# Wide format for plotting
-auc_wide <- all_auc_results %>%
-  mutate(cutoff_num = as.numeric(str_remove(cutoff, "cutoff_"))) %>%
-  select(model, cutoff_num, auc, n)
-
-# Plot AUC vs cutoff for each model
-library(ggplot2)
-ggplot(auc_wide, aes(x = cutoff_num, y = auc, color = model)) +
-  geom_line() +
-  geom_point() +
-  labs(
-    x = "DayRelativeToNearestHCT cutoff (max day included)",
-    y = "Test set AUC",
-    color = "Model",
-    title = "Model AUC vs. cutoff day for test set feature calculation"
-  ) +
-  theme_minimal()
-
-# Save results
-write_csv(auc_wide, "document/tables/model_auc_by_cutoff.csv")
 ```
 
+Then, I calcualted the ROC-AUCs from 5-fold cross-validation (i.e., splitting data in 5 folds stratified by infeciton status to preserve label proportions; train on 4, test on remaining 1; repeat across all 5 folds)
+
 ```{r}
-library(tidyverse)
-library(broom)
+# Library to extract ROC-AUCs
 library(pROC)
 
-# --- 1. Prepare patient-level data as before ---
+# Prepare patient-level data as before
 features_post <- patient_features %>%
   filter(received_quin, n_samples_post > 0)
 
-# --- 2. Create 5 stratified folds by patient infection status ---
-set.seed(87433)
+# Create 5 stratified folds by patient infection status
+set.seed(8743)
 n_folds <- 5
 
 # Assign folds stratified by has_infection
@@ -1634,7 +1447,7 @@ features_post <- features_post %>%
   mutate(fold = sample(rep(1:n_folds, length.out = n()))) %>%
   ungroup()
 
-# --- 3. Define cutoffs and model formulas ---
+# Define cutoffs and model formulas
 cutoff_days <- -3:5
 
 model_formulas <- list(
@@ -1645,7 +1458,7 @@ model_formulas <- list(
   model5 = has_infection ~ log10(median_proteobacteria_post + 1e-05) * log10(median_tannerellaceae_post + 1e-05)
 )
 
-# --- 4. Cross-validation loop ---
+# Cross-validation loop
 cv_auc_results <- list()
 
 for (cutoff in cutoff_days) {
@@ -1701,23 +1514,11 @@ for (cutoff in cutoff_days) {
   }
 }
 
+# Aggregate results in a single table
 cv_auc_results_tbl <- bind_rows(cv_auc_results)
-
-# --- 5. Plot and save results ---
-ggplot(cv_auc_results_tbl, aes(x = cutoff, y = mean_auc, color = model)) +
-  geom_line() +
-  geom_point() +
-  geom_errorbar(aes(ymin = mean_auc - se_auc, ymax = mean_auc + se_auc), width = 0.2) +
-  labs(
-    x = "DayRelativeToNearestHCT cutoff (max day included)",
-    y = "Mean test set AUC (5-fold CV)",
-    color = "Model",
-    title = "Cross-validated Model AUC vs. cutoff day"
-  ) +
-  theme_minimal()
-
-write_csv(cv_auc_results_tbl, "document/tables/model_auc_by_cutoff_cv.csv")
 ```
+
+Finally, I plotted the ROC-AUCs from the different models across the different time cutoffs:
 
 ```{r}
 # Define custom model colors
@@ -1738,6 +1539,7 @@ model_labels <- c(
   "model5" = "Pseudomonadota*Tannerellaceae"
 )
 
+# Plot ROC-AUCs across thresholds
 linearmodels_auc <- cv_auc_results_tbl %>%
   ggplot(aes(x = cutoff, y = mean_auc, color = model, fill = model, group = model)) +
   geom_ribbon(aes(ymin = mean_auc - se_auc, ymax = pmin(mean_auc + se_auc, 1)), alpha = 0.2, color = NA) +
@@ -1756,529 +1558,4 @@ linearmodels_auc <- cv_auc_results_tbl %>%
   theme(legend.position = c(0.5, 0.25))
 
 ggsave("document/plots/linearmodels_auc.pdf", linearmodels_auc, width = 7, height = 5)
-```
-
-
-
-## Quantifying PUL abundance at metagenome scale
-
-I started with the metagenomic assemblies that I generated for the Enterococcus F32 exploration. They are under `analyses/enterococcus_diversity/metagenomes/assembly/metaspades/`, but I will symlink them to a new directory to simplify paths:
-
-```{bash, eval=FALSE}
-mkdir -p analyses/bacteroides_pul/metagenomes/assembly
-ln -s /data1/xavierj/carlos/bsi_prediction/analyses/enterococcus_diversity/metagenomes/assembly/metaspades /data1/xavierj/carlos/bsi_prediction/analyses/bacteroides_pul/metagenomes/assembly/metaspades
-```
-
-Some of the reads failed to assembly due to memory requirements, so I took the assemblies available from Isabl for those samples:
-
-```{bash, eval=FALSE}
-# Print list of samples missing assemblies
-while read sample; do
-  if [ ! -f "analyses/bacteroides_pul/metagenomes/assembly/metaspades/${sample}/contigs.fasta" ]; then
-    echo "$sample"
-  fi
-done < misc_files/bacteroides_pul/isabl1_samples.txt > misc_files/bacteroides_pul/missing_assemblies.txt
-
-# Activate isabl conda
-conda activate /usersoftware/collab004/conda/isablprod
-
-# Set env variables
-export ISABL_CLIENT_ID=1
-export ISABL_API_URL="https://isabl.microbiome.mskcc.org/api/v1"
-
-# Load sample names to variable
-TARGET_SAMPLES=$(paste -sd, misc_files/bacteroides_pul/missing_assemblies.txt)
-
-# Get the assembly paths available from isabl
-isabl get-metadata analyses \
-    -fi application.pk 84 \
-    -fi targets.sample.identifier.in ${TARGET_SAMPLES} \
-    --field targets.sample.identifier \
-    --field results.assembly_fa | grep "fasta" >  misc_files/bacteroides_pul/missing_assembly_paths.txt
-
-while IFS=$'\t' read -r sample path; do
-  # Remove brackets and single quotes from sample name
-  sample_clean=$(echo "$sample" | sed "s/\[\('\([^']*\)'\)\]/\2/")
-  # Fix origin path if needed
-  path_fixed=$(echo "$path" | sed 's|/data/brinkvd/|/data1/collab004/|')
-  # Make destination directory if it doesn't exist
-  dest_dir="analyses/bacteroides_pul/metagenomes/assembly/metaspades/${sample_clean}"
-  mkdir -p "$dest_dir"
-  # Copy fasta file
-  cp "$path_fixed" "${dest_dir}/contigs.fasta"
-done < misc_files/bacteroides_pul/missing_assembly_paths.txt
-
-# Print list of samples with succesful assemblies
-while read sample; do
-  if [ -f "analyses/bacteroides_pul/metagenomes/assembly/metaspades/${sample}/contigs.fasta" ]; then
-    echo "$sample"
-  fi
-done < misc_files/bacteroides_pul/isabl1_samples.txt > misc_files/bacteroides_pul/isabl1_succesful_assemblies.txt
-```
-
-Let's rerun the contig filtering to ensure that all assemblies contain only contigs >= 1000 bps:
-
-```{bash, eval=FALSE}
-sbatch code/scripts/bacteroides_pul/filter_contigs_isabl1.sh
-```
-
-Then I obtained CGCs and PUL predictions with DBCAN:
-
-```{bash, eval=FALSE}
-sbatch code/scripts/bacteroides_pul/dbcan_isabl1.sh #6223852
-```
-
-These failed because there were no CGCs found: 2035, 1880, 1655, 1640, 1530, 1063, 63, 40.
-
-Having the predictions, I ran the pipeline to obtain TPM counts of the CGCs and PULs:
-
-```{bash, eval=FALSE}
-sbatch code/scripts/bacteroides_pul/get_pulabund.sh
-```
-
-Finally, we compile the quantification results into feature tables at different levels for the samples for which the run was successful:
-
-```{bash, eval=FALSE}
-# Make directory for modeling
-mkdir -p analyses/bacteroides_pul/pul_modeling/feature_tables
-
-# Exclude the samples for which the PUL predition did not work
-awk 'NR!=2035 && NR!=1880 && NR!=1655 && NR!=1640 && NR!=1530 && NR!=1063 && NR!=63 && NR!=40' \
-  misc_files/bacteroides_pul/isabl1_succesful_assemblies.txt > analyses/bacteroides_pul/pul_modeling/isabl1_succesful_pulpredictions.txt
-
-# Get feature tables
-for out_type in fam_substrate fam subfam PUL EC; do
-  python software/custom/get_pulfeatures.py \
-    --samples misc_files/bacteroides_pul/isabl1_succesful_pulpredictions.txt \
-    --output analyses/bacteroides_pul/pul_modeling/feature_tables/${out_type}.tsv \
-    --base_dir analyses/bacteroides_pul/pul_prediction/abund/ \
-    --output_type ${out_type}
-done
-```
-
-
-## Modeling Pseudomonadota BSI and expansion with PUL scores in allo-HCT patients
-
-### Defining BSI case and control sets from metagenomic samples
-
-Let's figure which patients have metagenomic samples within a certain period (7, 14, and 30 days) before a proteobacteria BSI:
-
-```{r}
-# Load required libraries and functions
-suppressMessages(library(tidyverse))
-source("code/rfunctions/data_helpers.r")
-
-# Load the list of isabl1 samples with PUL predictions
-pul_samples <- scan("analyses/bacteroides_pul/pul_modeling/isabl1_succesful_pulpredictions.txt", what = "character")
-
-# Load the table with sample-patient data
-tblASVsamples <- read_csv("data/tblASVsamples.csv") %>%
-  distinct(SampleID, .keep_all = TRUE) %>%
-  mutate(isabl1 = SampleID %in% pul_samples) %>%
-  select(SampleID, PatientID, DayRelativeToNearestHCT, isabl1)
-
-# Load the patientday table
-load("analyses/processed_data/tblpatientday_clinical.RData")
-tblpatientday_clinical$DayRelativeToNearestHCT <- as.numeric(as.character(tblpatientday_clinical$DayRelativeToNearestHCT))
-
-# Annorate patientday table with isabl1
-tblpatientday_isabl1 <- tblpatientday_clinical %>%
-  left_join(tblASVsamples, by = c("PatientID" = "PatientID", "DayRelativeToNearestHCT" = "DayRelativeToNearestHCT"))
-
-# Patients with at least one metagenome and a Proteobacteria infection
-proteobsi_isabl1_all <- tblpatientday_isabl1 %>%
-  group_by(PatientID) %>%
-  summarize(
-    has_isabl1 = any(isabl1 == TRUE, na.rm = TRUE),
-    has_proteo = any(Proteobacteria_infection == 1, na.rm = TRUE)
-  ) %>%
-  filter(has_isabl1 & has_proteo) %>%
-  pull(PatientID) %>%
-  sort() %>%
-  unique()
-
-# Let's now find the patients with metagenomes within X days of the first Proteo infection
-
-# Find first day of Proteobacteria_infection for each patient
-first_proteo <- tblpatientday_isabl1 %>%
-  filter(Proteobacteria_infection == 1) %>%
-  group_by(PatientID) %>%
-  summarize(first_infection_day = min(DayRelativeToNearestHCT, na.rm = TRUE))
-
-# Patients with a metagenome within 7 days before or on the first infection day
-proteobsi_isabl1_7day <- tblpatientday_isabl1 %>%
-  inner_join(first_proteo, by = "PatientID") %>%
-  filter(isabl1 == TRUE,
-         DayRelativeToNearestHCT >= (first_infection_day - 7),
-         DayRelativeToNearestHCT <= first_infection_day) %>%
-  pull(PatientID) %>%
-  unique() %>%
-  sort()
-
-# Patients with a metagenome within 14 days before or on the first infection day
-proteobsi_isabl1_14day <- tblpatientday_isabl1 %>%
-  inner_join(first_proteo, by = "PatientID") %>%
-  filter(isabl1 == TRUE,
-         DayRelativeToNearestHCT >= (first_infection_day - 14),
-         DayRelativeToNearestHCT <= first_infection_day) %>%
-  pull(PatientID) %>%
-  unique() %>%
-  sort()
-
-# Patients with a metagenome within 14 days before or on the first infection day
-proteobsi_isabl1_20day <- tblpatientday_isabl1 %>%
-  inner_join(first_proteo, by = "PatientID") %>%
-  filter(isabl1 == TRUE,
-         DayRelativeToNearestHCT >= (first_infection_day - 20),
-         DayRelativeToNearestHCT <= first_infection_day) %>%
-  pull(PatientID) %>%
-  unique() %>%
-  sort()
-
-# Show patient lists
-proteobsi_isabl1_7day
-proteobsi_isabl1_14day
-proteobsi_isabl1_20day
-```
-
-Now, for each set, let's make a matching control set for the statistical analyses:
-
-```{r}
-casecontrol_7day <- create_case_control_data(n_controls = 4, proteobsi_isabl1_7day) %>% distinct(PatientID, .keep_all = TRUE)
-casecontrol_14day <- create_case_control_data(n_controls = 4, proteobsi_isabl1_14day) %>% distinct(PatientID, .keep_all = TRUE)
-casecontrol_20day <- create_case_control_data(n_controls = 4, proteobsi_isabl1_20day) %>% distinct(PatientID, .keep_all = TRUE)
-```
-
-Let's print the Patient IDs from the matched case-control datasets to send to Isaac for benchmarking:
-
-```{r}
-if (!dir.exists("analyses/bacteroides_pul/pul_modeling/casecontrol_sets")) {
-  dir.create("analyses/bacteroides_pul/pul_modeling/casecontrol_sets", recursive = TRUE, showWarnings = FALSE)
-}
-casecontrol_7day_patients <- casecontrol_7day$PatientID
-casecontrol_14day_patients <- casecontrol_14day$PatientID
-casecontrol_20day_patients <- casecontrol_20day$PatientID
-writeLines(casecontrol_7day_patients, "analyses/bacteroides_pul/pul_modeling/casecontrol_sets/casecontrol_7day_patients.txt")
-writeLines(casecontrol_14day_patients, "analyses/bacteroides_pul/pul_modeling/casecontrol_sets/casecontrol_14day_patients.txt")
-writeLines(casecontrol_20day_patients, "analyses/bacteroides_pul/pul_modeling/casecontrol_sets/casecontrol_20day_patients.txt")
-```
-
-### Defining PUL features that predict Pseudomonadota BSI and expansion
-
-We used the 16S-based relative abundance of *Bacteroides* as a point of comparison for the predictive power of the PUL features. Thus, I first needed to compile those data. I prepared a version of the dataset where I merged the relative abundances of ASVs in three groups:
-
-  - *Bacteroides s. lat*: all ASVs classified as *Bacteroides* in the original dataset, which includes both *Bacteroides* and *Phocaeicola* species.
-  - *Bacteroides s. str.*: All ASVs classified as *Bacteroides* after removing the ones that matched full 16S sequences of *Phocaeicola*.
-  - *Phocaeicola*: All ASVs that matched full 16S sequences of *Phocaeicola*, plus ASV_6242, which was the only one originally classified as *Phocaeicola*.
-
-```{r}
-# Load the species summary
-load("analyses/processed_data/asv_species_summary.RData")
-
-# Define the ASVs in each group_by
-bacteroides_slat_asvs <- asv_species_summary %>%
-  pull(asv)
-bacteroides_sstr_asvs <- asv_species_summary %>%
-  filter(!str_detect(species, "Phocaeicola") & mismatches <= 1) %>%
-  pull(asv)
-phocaeicola_asvs <- c(
-  asv_species_summary %>%
-    filter(str_detect(species, "Phocaeicola") & mismatches <= 1) %>%
-    pull(asv), 
-  "ASV_6242")
-
-# Get the 16S features and group the ASVs
-#tblrel_genus_meta <- prep_taxa_counts("genus")
-tblrel_asv_meta <- prep_taxa_counts("asv") %>%
-  mutate(
-    Bacteroides_s_lat = {
-      cols <- intersect(paste0(bacteroides_slat_asvs, "_abund"), names(.))
-      if (length(cols) > 0) rowSums(select(., all_of(cols)), na.rm = TRUE) else 0
-    },
-    Bacteroides_s_str = {
-      cols <- intersect(paste0(bacteroides_sstr_asvs, "_abund"), names(.))
-      if (length(cols) > 0) rowSums(select(., all_of(cols)), na.rm = TRUE) else 0
-    },
-    Phocaeicola = {
-      cols <- intersect(paste0(phocaeicola_asvs, "_abund"), names(.))
-      if (length(cols) > 0) rowSums(select(., all_of(cols)), na.rm = TRUE) else 0
-    }
-  ) %>%
-  select(Sample, Bacteroides_s_lat, Bacteroides_s_str, Phocaeicola, ASV_277_abund, ASV_94_abund, ASV_223_abund, ASV_1875_abund)
-```
-
-Now we can add the PUL and 16S features to the case-control datasets:
-
-```{r}
-# Load the PUL feature tables
-fam <- read_delim("analyses/bacteroides_pul/pul_modeling/feature_tables/fam.tsv")
-fam_substrate <- read_delim("analyses/bacteroides_pul/pul_modeling/feature_tables/fam_substrate.tsv")
-subfam <- read_delim("analyses/bacteroides_pul/pul_modeling/feature_tables/subfam.tsv")
-pul <- read_delim("analyses/bacteroides_pul/pul_modeling/feature_tables/pul.tsv")
-ec <- read_delim("analyses/bacteroides_pul/pul_modeling/feature_tables/ec.tsv")
-
-# Add features to Case-control sets
-casecontrol_fam_7day <- casecontrol_7day %>% 
-  left_join(fam, by = c("SampleID" = "sample")) %>%
-  left_join(tblrel_asv_meta, by = c("SampleID" = "Sample"))
-casecontrol_fam_substrate_7day <- casecontrol_7day %>%
-  left_join(fam_substrate, by = c("SampleID" = "sample")) %>%
-  left_join(tblrel_asv_meta, by = c("SampleID" = "Sample"))
-casecontrol_subfam_7day <- casecontrol_7day %>%
-  left_join(subfam, by = c("SampleID" = "sample")) %>%
-  left_join(tblrel_asv_meta, by = c("SampleID" = "Sample"))
-casecontrol_pul_7day <- casecontrol_7day %>%
-  left_join(pul, by = c("SampleID" = "sample")) %>%
-  left_join(tblrel_asv_meta, by = c("SampleID" = "Sample"))
-casecontrol_ec_7day <- casecontrol_7day %>%
-  left_join(ec, by = c("SampleID" = "sample")) %>%
-  left_join(tblrel_asv_meta, by = c("SampleID" = "Sample"))
-
-casecontrol_fam_14day <- casecontrol_14day %>%
-  left_join(fam, by = c("SampleID" = "sample")) %>%
-  left_join(tblrel_asv_meta, by = c("SampleID" = "Sample"))
-casecontrol_fam_substrate_14day <- casecontrol_14day %>%
-  left_join(fam_substrate, by = c("SampleID" = "sample")) %>%
-  left_join(tblrel_asv_meta, by = c("SampleID" = "Sample"))
-casecontrol_subfam_14day <- casecontrol_14day %>%
-  left_join(subfam, by = c("SampleID" = "sample")) %>%
-  left_join(tblrel_asv_meta, by = c("SampleID" = "Sample"))
-casecontrol_pul_14day <- casecontrol_14day %>%
-  left_join(pul, by = c("SampleID" = "sample")) %>%
-  left_join(tblrel_asv_meta, by = c("SampleID" = "Sample"))
-casecontrol_ec_14day <- casecontrol_14day %>%
-  left_join(ec, by = c("SampleID" = "sample")) %>%
-  left_join(tblrel_asv_meta, by = c("SampleID" = "Sample"))
-
-casecontrol_fam_20day <- casecontrol_20day %>%
-  left_join(fam, by = c("SampleID" = "sample")) %>%
-  left_join(tblrel_asv_meta, by = c("SampleID" = "Sample"))
-casecontrol_fam_substrate_20day <- casecontrol_20day %>%
-  left_join(fam_substrate, by = c("SampleID" = "sample")) %>%
-  left_join(tblrel_asv_meta, by = c("SampleID" = "Sample"))
-casecontrol_subfam_20day <- casecontrol_20day %>%
-  left_join(subfam, by = c("SampleID" = "sample")) %>%
-  left_join(tblrel_asv_meta, by = c("SampleID" = "Sample"))
-casecontrol_pul_20day <- casecontrol_20day %>%
-  left_join(pul, by = c("SampleID" = "sample")) %>%
-  left_join(tblrel_asv_meta, by = c("SampleID" = "Sample"))
-casecontrol_ec_20day <- casecontrol_20day %>%
-  left_join(ec, by = c("SampleID" = "sample")) %>%
-  left_join(tblrel_asv_meta, by = c("SampleID" = "Sample"))
-```
-
-
-```{r}
-
-datasets <- list(
-  "7day" = casecontrol_fam_7day,
-  "14day" = casecontrol_fam_14day,
-  "20day" = casecontrol_fam_20day
-)
-covariates <- c("Bacteroides_s_lat", "Bacteroides_s_str", "Phocaeicola", "ASV_277_abund", "ASV_94_abund", "ASV_223_abund", "ASV_1875_abund")
-
-test_covariate <- function(df, covar, test = c("both", "regression", "wilcox")) {
-  test <- match.arg(test)
-  # Keep rows with non-missing case and covariate for either test
-  df <- df %>% filter(!is.na(case), !is.na(.data[[covar]]))
-  
-  # Prepare default empty results
-  default_reg <- tibble(term = covar, estimate = NA_real_, std.error = NA_real_, statistic = NA_real_, p.value = NA_real_, variable = covar)
-  default_wilcox <- tibble(variable = covar, statistic = NA_real_, p.value = NA_real_)
-  
-  # Run regression if requested
-  if (test %in% c("both", "regression")) {
-    form <- as.formula(paste("case ~", covar))
-    reg <- tryCatch(glm(form, data = df, family = binomial), error = function(e) NULL)
-    reg_tidy <- if (!is.null(reg)) {
-      broom::tidy(reg) %>% filter(term == covar) %>% mutate(variable = covar)
-    } else {
-      default_reg
-    }
-  } else {
-    reg_tidy <- default_reg
-  }
-  
-  # Run wilcox if requested
-  if (test %in% c("both", "wilcox")) {
-    wilcox <- tryCatch(wilcox.test(formula = as.formula(paste(covar, "~ case")), data = df), error = function(e) NULL)
-    wilcox_tbl <- if (!is.null(wilcox)) {
-      tibble(variable = covar, statistic = wilcox$statistic, p.value = wilcox$p.value)
-    } else {
-      default_wilcox
-    }
-  } else {
-    wilcox_tbl <- default_wilcox
-  }
-  
-  list(
-    regression = reg_tidy,
-    wilcox = wilcox_tbl
-  )
-}
-
-# Regression results
-regression_results <- bind_rows(
-  lapply(names(datasets), function(day) {
-    map_dfr(covariates, function(covar) {
-      test_covariate(datasets[[day]], covar, test = "regression")$regression %>%
-        mutate(dataset = day)
-    })
-  })
-)
-
-# Wilcox results
-wilcox_results <- bind_rows(
-  lapply(names(datasets), function(day) {
-    map_dfr(covariates, function(covar) {
-      test_covariate(datasets[[day]], covar, test = "wilcox")$wilcox %>%
-        mutate(dataset = day)
-    })
-  })
-)
-
-# View results
-regression_results
-wilcox_results
-```
-Now, let's run LASSO regressions to see if there is any of the features that predicts BSI:
-
-```{r}
-library(glmnet)
-
-run_lasso <- function(df, response_col = "case", feature_start_col = 7, alpha = 1) {
-  # Prepare data
-  y <- as.numeric(df[[response_col]])
-  X <- as.matrix(df[, feature_start_col:ncol(df)])
-  colnames(X) <- colnames(df)[feature_start_col:ncol(df)]
-  
-  # Remove columns with all zeros or NAs
-  nonzero_cols <- which(colSums(X, na.rm = TRUE) != 0)
-  X <- X[, nonzero_cols, drop = FALSE]
-  
-  # Remove rows with NA in response
-  keep <- !is.na(y)
-  y <- y[keep]
-  X <- X[keep, , drop = FALSE]
-  
-  # Fit LASSO logistic regression with cross-validation
-  cvfit <- cv.glmnet(X, y, family = "binomial", alpha = alpha, standardize = TRUE)
-  
-  # Get coefficients at lambda.min
-  coef_min <- coef(cvfit, s = "lambda.min")
-  selected_features <- rownames(coef_min)[which(coef_min != 0)]
-  selected_features <- setdiff(selected_features, "(Intercept)")
-  
-  list(
-    cvfit = cvfit,
-    selected_features = selected_features,
-    coef = coef_min
-  )
-}
-
-# Example usage for casecontrol_fam_7day
-lasso_fam_7day <- run_lasso(casecontrol_fam_7day)
-print(lasso_fam_7day$selected_features)
-
-# You can repeat for other datasets:
-lasso_fam_substrate_7day <- run_lasso(casecontrol_fam_substrate_7day, log_transform = F)
-lasso_subfam_7day <- run_lasso(casecontrol_subfam_7day, log_transform = F)
-lasso_pul_7day <- run_lasso(casecontrol_pul_7day, log_transform = F)
-lasso_ec_7day <- run_lasso(casecontrol_ec_7day, log_transform = F)
-```
-
-
-```{r}
-glm_fructan <- glm(case ~ cellulose, 
-                   data = casecontrol_fam_substrate_7day, 
-                   family = binomial)
-
-summary(glm_fructan)
-
-ggplot(casecontrol_fam_substrate_20day, aes(x = factor(case), y = log10(Bacteroides_s_lat+0.000001))) +
-  geom_boxplot(outlier.shape = NA) +
-  geom_jitter(width = 0.2, alpha = 0.7, color = "blue") +
-  labs(
-    x = "Case Status (0 = Control, 1 = Case)",
-    y = "GH32_e57 Abundance",
-    title = "GH32_e57 Abundance by Case Status"
-  ) +
-  theme_minimal()
-```
-
-
-
-### Substrates
-
-```{r}
-filter(cazyme_data, Prediction != "OTHER" & cazy_type == "GH") %>%
-  pull(cazy_fam) %>%
-  unique()
-
-```
-
-
-## TRASH
-
-```{r}
-#TRASH
-
-
-case_patients <- proteobsi_isabl1_7day # or _7day, _20day
-
-case_samples <- tblASVsamples %>%
-  filter(PatientID %in% case_patients, isabl1 == TRUE) %>%
-  inner_join(first_proteo, by = "PatientID") %>%
-  mutate(day_diff = first_infection_day - DayRelativeToNearestHCT) %>%
-  filter(day_diff >= 0) %>%
-  group_by(PatientID) %>%
-  slice_min(order_by = day_diff, n = 1, with_ties = FALSE) %>%
-  ungroup() %>%
-  select(PatientID, SampleID, DayRelativeToNearestHCT, first_infection_day, day_diff)
-
-# Add clinical phase and sex
-case_samples <- case_samples %>%
-  left_join(tblpatientday_clinical %>% select(PatientID, DayRelativeToNearestHCT, clinical_phase, sex),
-            by = c("PatientID", "DayRelativeToNearestHCT"))
-
-# Prepare control pool: patients with metagenomic samples, no Proteobacteria infection
-control_pool <- tblASVsamples %>%
-  filter(isabl1 == TRUE, !PatientID %in% proteobsi_isabl1_all) %>%
-  left_join(tblpatientday_clinical %>% select(PatientID, DayRelativeToNearestHCT, clinical_phase, sex, Proteobacteria_infection),
-            by = c("PatientID", "DayRelativeToNearestHCT")) %>%
-  filter(Proteobacteria_infection == 0 | is.na(Proteobacteria_infection))
-
-# For each case, randomly select 4 matched controls by clinical_phase and sex
-set.seed(1830)
-matched_case_controls <- case_samples %>%
-  rowwise() %>%
-  mutate(
-    control_samples = list({
-      phase <- clinical_phase
-      sex_ref <- sex
-      control_pool %>%
-        filter(clinical_phase == phase, sex == sex_ref) %>%
-        sample_n(size = min(4, n()), replace = FALSE) %>%
-        select(PatientID, SampleID, DayRelativeToNearestHCT, clinical_phase, sex)
-    })
-  ) %>%
-  unnest(control_samples, names_sep = "_control") %>%
-  ungroup()
-
-# Combine into a single dataset
-case_control_data <- bind_rows(
-  case_samples %>%
-    mutate(case = TRUE) %>%
-    select(PatientID, SampleID, DayRelativeToNearestHCT, clinical_phase, sex, case),
-  matched_case_controls %>%
-    mutate(case = FALSE) %>%
-    select(PatientID = control_samples_controlPatientID,
-           SampleID = control_samples_controlSampleID,
-           DayRelativeToNearestHCT = control_samples_controlDayRelativeToNearestHCT,
-           clinical_phase = control_samples_controlclinical_phase,
-           sex = control_samples_controlsex,
-           case)
-) #%>%
-  #left_join(tblrel_genus_meta, by = c("PatientID", "SampleID"))
-
 ```

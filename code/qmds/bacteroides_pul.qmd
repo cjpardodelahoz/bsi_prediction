@@ -1410,7 +1410,7 @@ recalc_patient_features_cutoff <- function(cutoff, test_patient_ids) {
     ) %>%
     filter(
       received_quin,
-      DayRelativeToNearestHCT >= (first_quin_day),
+      DayRelativeToNearestHCT >= (first_quin_day + 1),
       DayRelativeToNearestHCT < max_day
     ) %>%
     group_by(PatientID, has_infection, received_quin) %>%
@@ -1438,7 +1438,7 @@ features_post <- patient_features %>%
   filter(received_quin, n_samples_post > 0)
 
 # Create 5 stratified folds by patient infection status
-set.seed(8743)
+set.seed(603)
 n_folds <- 5
 
 # Assign folds stratified by has_infection

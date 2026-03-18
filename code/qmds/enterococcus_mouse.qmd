@@ -1,0 +1,310 @@
+---
+title: "*Enterococcus* mouse experiments"
+format:
+  html:
+    code-fold: true
+    code-summary: "Show the code"
+---
+
+## Pilot I - Colonization, expansion, and translocation
+
+The experiment had three groups of mice:
+
+  - Group A: received continuous oral ampicillin (CONCENTRATION) and *E. faecium* ATCC 700221 via oral gavage (CONCENTRATION)
+  - Group B: received three doses of clindamycin (CONCENTRATION) and *E. faecium* ATCC 700221 via oral gavage (CONCENTRATION)
+  - Group C: received three doses of clindamycin (CONCENTRATION) and *E. faecalis* V583 via oral gavage (CONCENTRATION)
+
+Fecal samples, blood, and organ dilutions were plated on Enterococcosel agar (EA) and EV + vancomycin CONCENTRATION (EAV).
+
+### Fecal CFU dynamics
+
+Let's start by parsing the excel sheets with the fecal CFU counts:
+
+```{r}
+library(tidyverse)
+library(readxl)
+
+# List data sheet names
+poop_sheets <- excel_sheets("data/lab_raw/mouse/pilot1/CFU_Exp1_Pilot.xlsx")[1:13]
+
+# Read and combine all sheets, forcing "Notes" to character
+poop_cfus <- lapply(poop_sheets, function(sheet) {
+  df <- read_excel("data/lab_raw/mouse/pilot1/CFU_Exp1_Pilot.xlsx", sheet = sheet)
+  df %>% mutate(Notes = as.character(Notes))
+}) %>%
+  bind_rows() %>%
+  mutate(
+    Date_parsed = as.Date(Date, format = "%m.%d.%y"),
+    # Reference date: October 23, 2025, gavage date
+    day = as.integer(Date_parsed - as.Date("2025-10-23")),
+    cfu_per_g = (`Colony Number` * Dilution * 10) / `Weight of poop`,
+    log10_cfu_per_g = log10(cfu_per_g + 1),
+    Plate = str_replace(Plate, "EA`", "EA"),
+    group = str_remove(Mouse_Name, "\\d+")) %>%
+  rename(n_colonies = `Colony Number`,
+        poop_weight = `Weight of poop`,
+        species = `Bacteria Type`,
+        mouse = Mouse_Name,
+        date = Date,
+        dilution = Dilution,
+        media = Plate) %>%
+  select(date, day, group, mouse, media, cfu_per_g,log10_cfu_per_g, dilution, n_colonies, poop_weight, species)
+
+# Identify all mouse-day combinations with EA
+ea_rows <- poop_cfus %>% filter(media == "EA")
+
+# Find mouse-day combos missing EAV
+missing_eav <- ea_rows %>%
+  anti_join(
+    poop_cfus %>% filter(media == "EAV") %>% select(mouse, day),
+    by = c("mouse", "day")
+  )
+
+# Create filled EAV rows
+filled_eav <- missing_eav %>%
+  mutate(
+    media = "EAV",
+    n_colonies = 0,
+    cfu_per_g = 0,
+    log10_cfu_per_g = 0,
+    dilution = 1
+  )
+
+# Bind filled rows to poop_cfus
+poop_cfus <- bind_rows(poop_cfus, filled_eav) %>%
+  arrange(day)
+```
+
+Now, we make a funciton that will summarize the poop CFUs for each group and plot the dynamics throughout the experiment:
+
+```{r}
+plot_poop_group <- function(poop_cfus, group_name) {
+  # Filter for specified group and select entry with highest n_colonies per mouse per day and media
+  poop_group <- poop_cfus %>%
+    filter(group == group_name) %>%
+    group_by(mouse, day, media) %>%
+    slice_max(n_colonies, n = 1, with_ties = FALSE) %>%
+    ungroup()
+  
+  # Calculate summary statistics for each day and media
+  summary_group <- poop_group %>%
+    group_by(day, media) %>%
+    summarise(
+      mean_log10 = mean(log10_cfu_per_g, na.rm = TRUE),
+      q2.5 = quantile(log10_cfu_per_g, 0.025, na.rm = TRUE),
+      q97.5 = quantile(log10_cfu_per_g, 0.975, na.rm = TRUE),
+      .groups = "drop"
+    )
+  
+  # Create plot
+  p <- ggplot(summary_group, aes(x = day, y = mean_log10, color = media, fill = media)) +
+    geom_ribbon(aes(ymin = q2.5, ymax = q97.5), alpha = 0.2, color = NA) +
+    geom_line() +
+    geom_point(size = 2) +
+    labs(
+      x = "Day relative to gavage",
+      y = expression("CFU/g"),
+      color = "Media",
+      fill = "Media"
+    ) +
+    scale_x_continuous(breaks = scales::breaks_width(2)) +
+    scale_y_continuous(
+      limits = c(0, 10),
+      breaks = seq(0, 10, by = 2),
+      labels = function(x) parse(text = paste0("10^", x))
+    ) +
+    #scale_y_continuous(limits = c(0, 10), breaks = seq(0, 10, by = 2)) +
+    scale_color_manual(values = c("EA" = "#a08413", "EAV" = "#0D7E2B")) +
+    scale_fill_manual(values = c("EA" = "#a08413", "EAV" = "#0D7E2B")) +
+    #theme_minimal() +
+    theme(panel.border = element_rect(color = "black", fill = NA, linewidth = 0.759),
+          panel.background = element_blank(),
+          legend.position = "inside",
+          legend.position.inside = c(0.7, 0.9),
+          text = element_text(color = "black"),
+          axis.text = element_text(color = "black"))
+  
+  return(list(plot = p, poop_group = poop_group))
+}
+```
+
+And the we generate the summaries and plots for each group:
+
+```{r}
+# Summaries
+poop_cfus_A_sum <- plot_poop_group(poop_cfus, "A")$poop_group
+poop_cfus_B_sum <- plot_poop_group(poop_cfus, "B")$poop_group
+poop_cfus_C_sum <- plot_poop_group(poop_cfus, "C")$poop_group
+
+# Plots
+poop_cfus_A_plot <- plot_poop_group(poop_cfus, "A")$plot
+poop_cfus_B_plot <- plot_poop_group(poop_cfus, "B")$plot
+poop_cfus_C_plot <- plot_poop_group(poop_cfus, "C")$plot
+
+# Export plots
+ggsave("document/plots/poop_cfus_A_pilot1.pdf", poop_cfus_A_plot,
+        width = 4.3, height = 3)
+ggsave("document/plots/poop_cfus_B_pilot1.pdf", poop_cfus_B_plot,
+        width = 4.3, height = 3)
+ggsave("document/plots/poop_cfus_C_pilot1.pdf", poop_cfus_C_plot,
+        width = 4.3, height = 3)
+```
+
+### Organ CFU results
+
+Let's parse the counts for the organs and blood. Keep in mind that the liver, kidneys, lymph nodes, and mesenteric fat were often split before plating, so I took averages of the CFUs when processing the data: 
+
+```{r}
+# List data sheet names
+organ_sheets <- excel_sheets("data/lab_raw/mouse/pilot1/CFU_Exp1_Pilot.xlsx")[14:17]
+
+# Read and combine all sheets, forcing "Notes" and colony counts to character
+organ_cfus_pre <- lapply(organ_sheets, function(sheet) {
+  df <- read_excel("data/lab_raw/mouse/pilot1/CFU_Exp1_Pilot.xlsx", sheet = sheet)
+  df %>% mutate(Notes = as.character(Notes), `Colony Number` = as.character(`Colony Number`))
+}) %>%
+  bind_rows() %>%
+  mutate(
+    `Colony Number` = as.numeric(str_replace(`Colony Number`, "excess", "1000")),
+    cfu_per_unit = case_when(
+                          Organ == "Blood" ~ `Colony Number` * Dilution * 10,
+                          `Colony Number` == 0 & Dilution == 1 ~ 0,
+                          TRUE ~ (`Colony Number` * Dilution * 10) / `Weight of poop`
+                            ),
+    Plate = str_replace(Plate, "EA`", "EA"),
+    group = str_remove(Mouse_Name, "\\d+"))
+
+# Get averages for organs processed in batches and calculate log10 CFUs    
+organ_cfus_mean <- organ_cfus_pre %>%
+      mutate(
+        organ_category = case_when(
+          str_detect(Organ, "Liver") ~ "mean_liver",
+          str_detect(Organ, "Kidney") ~ "mean_kidney",
+          Organ %in% c("MF 1", "Adipose 1", "Adipose", "MF 2") ~ "mean_mf",
+          Organ %in% c("LN", "Lymph Node") ~ "mean_ln",
+          TRUE ~ Organ
+        )
+      ) %>%
+      group_by(Mouse_Name, Plate, organ_category) %>%
+      summarise(cfu_per_unit = mean(cfu_per_unit, na.rm = TRUE), .groups = "drop") %>%
+      mutate(
+        log10_cfu_per_unit = log10(cfu_per_unit + 1),
+        group = str_remove(Mouse_Name, "\\d+")
+      ) %>%
+      rename(
+        mouse = Mouse_Name,
+        media = Plate
+      )
+
+# Identify all mouse-media-organ_category combos with EA
+ea_rows <- organ_cfus_mean %>% filter(media == "EA")
+
+# Find combos missing EAV
+missing_eav <- ea_rows %>%
+  anti_join(
+    organ_cfus_mean %>% filter(media == "EAV") %>% select(mouse, group, organ_category),
+    by = c("mouse", "group", "organ_category")
+  )
+
+# Create filled EAV rows
+filled_eav <- missing_eav %>%
+  mutate(
+    media = "EAV",
+    cfu_per_unit = 0,
+    log10_cfu_per_unit = 0
+  )
+
+# Bind filled rows to organ_cfus
+organ_cfus <- bind_rows(organ_cfus_mean, filled_eav) %>%
+  arrange(mouse, group, organ_category, media)
+```
+
+Now, we make a funciton to plot the CFUs for each organ in the two media:
+
+```{r}
+plot_organ_boxplot <- function(organ_cfus, organ_category, media) {
+  fill_color <- if (media == "EA") "#a08413" else "#0D7E2B"
+  
+  organ_cfus %>%
+    filter(organ_category == !!organ_category, media == !!media) %>%
+    ggplot(aes(x = group, y = log10_cfu_per_unit, fill = group)) +
+      geom_boxplot(outlier.shape = NA, alpha = 0.6, fill = fill_color) +
+      geom_jitter(width = 0.3, height = 0, size = 1.7) +
+      labs(
+        x = "Group",
+        y = "CFU per unit"
+      ) +
+      scale_y_continuous(
+        limits = c(0, 9),
+        breaks = seq(0, 9, by = 1),
+        labels = function(x) parse(text = paste0("10^", x))
+      ) +
+      theme(panel.border = element_rect(color = "black", fill = NA, linewidth = 0.75),
+            panel.background = element_blank(),
+            legend.position = "none",
+            text = element_text(color = "black"),
+            axis.text = element_text(color = "black"))
+}
+```
+
+And then plot and arrange all the organ CFUs:
+
+```{r}
+library(ggpubr)
+
+# Blood plots
+blood_ea_plot <- plot_organ_boxplot(organ_cfus, "Blood", "EA")
+blood_eav_plot <- plot_organ_boxplot(organ_cfus, "Blood", "EAV")
+
+# Organ plots
+heart_ea_plot <- plot_organ_boxplot(organ_cfus, "Heart", "EA")
+heart_eav_plot <- plot_organ_boxplot(organ_cfus, "Heart", "EAV")
+liver_ea_plot <- plot_organ_boxplot(organ_cfus, "mean_liver", "EA")
+liver_eav_plot <- plot_organ_boxplot(organ_cfus, "mean_liver", "EAV")
+kidney_ea_plot <- plot_organ_boxplot(organ_cfus, "mean_kidney", "EA")
+kidney_eav_plot <- plot_organ_boxplot(organ_cfus, "mean_kidney", "EAV")
+spleen_ea_plot <- plot_organ_boxplot(organ_cfus, "Spleen", "EA")
+spleen_eav_plot <- plot_organ_boxplot(organ_cfus, "Spleen", "EAV")
+mf_ea_plot <- plot_organ_boxplot(organ_cfus, "mean_mf", "EA")
+mf_eav_plot <- plot_organ_boxplot(organ_cfus, "mean_mf", "EAV")
+
+# Small intestine plots
+duo_ea_plot <- plot_organ_boxplot(organ_cfus, "Duodenum", "EA")
+duo_eav_plot <- plot_organ_boxplot(organ_cfus, "Duodenum", "EAV")
+jeju_ea_plot <- plot_organ_boxplot(organ_cfus, "Jejunum", "EA")
+jeju_eav_plot <- plot_organ_boxplot(organ_cfus, "Jejunum", "EAV")
+ile_ea_plot <- plot_organ_boxplot(organ_cfus, "Ileum", "EA")
+ile_eav_plot <- plot_organ_boxplot(organ_cfus, "Ileum", "EAV")
+
+# Large intestine plots
+cecum_ea_plot <- plot_organ_boxplot(organ_cfus, "Cecum", "EA")
+cecum_eav_plot <- plot_organ_boxplot(organ_cfus, "Cecum", "EAV")
+cecumcon_ea_plot <- plot_organ_boxplot(organ_cfus, "Cecum Content", "EA")
+cecumcon_eav_plot <- plot_organ_boxplot(organ_cfus, "Cecum Content", "EAV")
+colon_ea_plot <- plot_organ_boxplot(organ_cfus, "Colon", "EA")
+colon_eav_plot <- plot_organ_boxplot(organ_cfus, "Colon", "EAV")
+coloncon_ea_plot <- plot_organ_boxplot(organ_cfus, "Colon Content", "EA")
+coloncon_eav_plot <- plot_organ_boxplot(organ_cfus, "Colon Content", "EAV")
+
+# Arrange plots for slides
+si_plots <- ggarrange(
+                      duo_ea_plot, jeju_ea_plot, ile_ea_plot,
+                      duo_eav_plot, jeju_eav_plot, ile_eav_plot,
+                      nrow = 2, ncol = 3
+                      )
+li_plots <- ggarrange(
+                      cecum_ea_plot, colon_ea_plot,
+                      cecum_eav_plot, colon_eav_plot,
+                      nrow = 2, ncol = 2
+                      )
+organ_plots <- ggarrange(
+                      mf_ea_plot, blood_ea_plot, liver_ea_plot, heart_ea_plot, kidney_ea_plot, spleen_ea_plot,
+                      mf_eav_plot, blood_eav_plot, liver_eav_plot, heart_eav_plot, kidney_eav_plot, spleen_eav_plot,
+                      nrow = 2, ncol = 6
+                      )
+
+# Save plots
+ggsave("document/plots/organ_cfus_pilot1.pdf", organ_plots, width = 10, height = 5)
+ggsave("document/plots/si_cfus_pilot1.pdf", si_plots, width = 5, height = 5)
+ggsave("document/plots/li_cfus_pilot1.pdf", li_plots, width = 3.34, height = 5)
+```

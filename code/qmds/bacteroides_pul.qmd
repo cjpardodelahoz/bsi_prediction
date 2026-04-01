@@ -26,6 +26,7 @@ sbatch code/scripts/bacteroides_pul/checkm2_isabl1.sh
 With the CheckM results and the GTDB results I obtained for the Enterococcus projects for these bins, we can now select a subset of MAGs on which to do the PUL predictions:
 
 ```{r}
+library(tidyverse)
 # Load the CheckM2 and GTDB reports
 gtdb <- read_delim("analyses/enterococcus_diversity_II/binning/short/isabl1/gtdb/gtdbtk.bac120.summary.tsv")
 checkm <- read_delim("analyses/bacteroides_pul/checkm2/quality_report.tsv")
@@ -421,7 +422,7 @@ abund_cols <- paste0(target_families, "_abund")
 
 # For each patient, determine first day of quinolone exposure
 quin_start <- tblpatientday_clinical %>%
-  filter(quinolones == 1 & DayRelativeToNearestHCT <= 30) %>%
+  filter(quinolones == 1 & between(DayRelativeToNearestHCT, -10, 0)) %>%
   group_by(PatientID) %>%
   summarise(first_quin_day = min(DayRelativeToNearestHCT, na.rm = TRUE))
 
@@ -499,7 +500,11 @@ ggsave("document/plots/bacteroidota_prophylaxis_effect.pdf", width = 3.5, height
 
 Let's also plot the distribution of median relative abundances per patient after quinolone prophylaxis for each family: 
 
-```{r}  
+```{r}
+# Prevalence and abundance after quin start
+post_tbl <- tbl_prevalence %>%
+  filter(prophylaxis_status == "post")
+
 # Calculate median abundance per patient for each family
 patient_medians <- post_tbl %>%
   filter(prophylaxis_status == "post") %>%
